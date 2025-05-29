@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
+
 // --- Components ---
 #[derive(Component)]
 pub struct Player {
@@ -41,6 +42,7 @@ pub fn spawn_player(
         Player { id: player_id },
         PlayerBody,
         ExternalImpulse::default(),
+
         Name::new(format!("Player {} Body", player_id)),
     )).id();
 

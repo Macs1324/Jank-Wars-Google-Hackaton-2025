@@ -9,3 +9,4 @@ edition = "2021"
 bevy = "0.13"
 bevy_rapier3d = { version = "0.25.0", features = [ "debug-render-3d" ] } # For 3D physics and debug rendering
 bevy-inspector-egui = "0.24.0" # For runtime inspector
+

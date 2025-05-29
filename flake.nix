@@ -35,6 +35,8 @@
             pkg-config
             rustToolchain
             git
+            clang
+            llvmPackages.libclang
           ];
 
           buildInputs = with pkgs; [
@@ -63,6 +65,15 @@
             xorg.xkbevd
             libGL
             wayland
+            # Webcam support
+            v4l-utils
+            libv4l
+            libudev-zero
+            gst_all_1.gstreamer
+            gst_all_1.gst-plugins-base
+            gst_all_1.gst-plugins-good
+            gst_all_1.gst-plugins-bad
+            gst_all_1.gst-plugins-ugly
           ];
         in
         with pkgs; {
@@ -70,6 +81,7 @@
             inherit buildInputs nativeBuildInputs;
             shellHook = ''
               export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${lib.makeLibraryPath buildInputs}
+              export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
             '';
           };
         }

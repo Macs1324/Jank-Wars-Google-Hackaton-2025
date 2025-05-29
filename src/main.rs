@@ -2,13 +2,15 @@ use bevy::prelude::*;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_rapier3d::prelude::*;
 
-mod player;
 mod environment;
+mod gestures;
 mod physics;
+mod player;
 
-use player::*;
 use environment::*;
+use gestures::*;
 use physics::*;
+use player::*;
 
 fn main() {
     App::new()
@@ -16,8 +18,24 @@ fn main() {
         .add_plugins(WorldInspectorPlugin::new())
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugins(RapierDebugRenderPlugin::default())
-        .add_systems(Startup, (setup_lighting, setup_camera, setup_ground, setup_players))
+        .add_systems(
+            Startup,
+            (
+                setup_lighting,
+                setup_camera,
+                setup_ground,
+                setup_players,
+                setup_gestures,
+            ),
+        )
         .add_systems(Update, (toggle_physics_debug_render, player_input_system))
+        .add_systems(
+            Update,
+            (
+                process_gestures,
+                map_gestures_to_movement,
+            ),
+        )
         .run();
 }
 
@@ -45,6 +63,11 @@ fn setup_players(
     );
 
     println!("3D scene with physics setup complete. Press 'D' to toggle physics debug view.");
-    println!("Ragdoll players spawned! Arrow keys move body, 1-6 keys control limbs (Player 0 Red).");
-    println!("Press the default egui inspector key (usually F12 or ESC) to open the world inspector.");
+    println!(
+        "Ragdoll players spawned! Arrow keys move body, 1-6 keys control limbs (Player 0 Red)."
+    );
+    println!("Gesture system ready for future implementation.");
+    println!(
+        "Press the default egui inspector key (usually F12 or ESC) to open the world inspector."
+    );
 }
