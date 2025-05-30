@@ -30,13 +30,13 @@ fn main() {
         )
         .add_systems(
             Startup,
-            setup_webcam_overlay.after(setup_webcam),
+            setup_webcam_ui.after(setup_webcam),
         )
         .add_systems(Update, (toggle_physics_debug_render, player_input_system))
         .add_systems(
             Update,
             (
-                update_webcam_overlay,
+                update_webcam_texture,
                 process_gestures,
                 map_gestures_to_movement,
             ),
@@ -71,7 +71,7 @@ fn setup_players(
     println!(
         "Ragdoll players spawned! Arrow keys move body, 1-6 keys control limbs (Player 0 Red)."
     );
-    println!("Webcam system initializing... Check top-right corner for camera feed overlay.");
+    println!("Webcam system initializing... Check top-right corner for camera feed.");
     println!(
         "Press the default egui inspector key (usually F12 or ESC) to open the world inspector."
     );
