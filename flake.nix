@@ -74,10 +74,11 @@
             gst_all_1.gst-plugins-good
             gst_all_1.gst-plugins-bad
             gst_all_1.gst-plugins-ugly
+            stdenv.cc.cc.lib
           ];
         in
         with pkgs; {
-          devShells.default = mkShell {
+          devShells.default = mkShell.override { stdenv = pkgs.clang17Stdenv; } {
             inherit buildInputs nativeBuildInputs;
             shellHook = ''
               export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${lib.makeLibraryPath buildInputs}

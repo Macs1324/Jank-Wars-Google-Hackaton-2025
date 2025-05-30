@@ -12,3 +12,7 @@ bevy-inspector-egui = "0.24.0" # For runtime inspector
 nokhwa = { version = "0.10", features = ["input-v4l", "output-threaded"] } # Webcam access for Linux
 image = { version = "0.24", features = ["jpeg", "png"] } # For image processing
 
+# MediaPipe Hand Tracking with ONNX Runtime
+ort = "1.16" # ONNX Runtime for MediaPipe model inference
+ndarray = "0.15" # N-dimensional arrays for tensor operations
+

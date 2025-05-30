@@ -2,13 +2,17 @@ use bevy::prelude::*;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_rapier3d::prelude::*;
 
+mod debug_ui;
 mod environment;
 mod gestures;
+mod hand_tracking;
 mod physics;
 mod player;
 
+use debug_ui::*;
 use environment::*;
 use gestures::*;
+use hand_tracking::*;
 use physics::*;
 use player::*;
 
@@ -30,18 +34,27 @@ fn main() {
         )
         .add_systems(
             Startup,
-            setup_webcam_ui.after(setup_webcam),
+            (setup_webcam_ui, setup_hand_tracking_system, setup_debug_ui).after(setup_webcam),
         )
         .add_systems(Update, (toggle_physics_debug_render, player_input_system))
         .add_systems(
             Update,
             (
                 update_webcam_texture,
-                process_gestures,
-                map_gestures_to_movement,
+                update_hand_tracking_system,
+                map_fingers_to_spider_legs,
+                update_debug_ui,
+                toggle_debug_overlay,
             ),
         )
         .run();
+}
+
+fn setup_hand_tracking_system(commands: Commands, webcam_res: Res<WebcamResource>) {
+    if let Err(e) = setup_hand_tracking(commands, Some(webcam_res)) {
+        eprintln!("⚠️ Hand tracking setup failed: {}", e);
+        eprintln!("   Game will continue with keyboard controls only");
+    }
 }
 
 fn setup_players(
@@ -67,12 +80,9 @@ fn setup_players(
         1,                         // Player ID 1
     );
 
-    println!("3D scene with physics setup complete. Press 'D' to toggle physics debug view.");
-    println!(
-        "Ragdoll players spawned! Arrow keys move body, 1-6 keys control limbs (Player 0 Red)."
-    );
-    println!("Webcam system initializing... Check top-right corner for camera feed.");
-    println!(
-        "Press the default egui inspector key (usually F12 or ESC) to open the world inspector."
-    );
+    println!("🕷️ Jank Wars - Finger-Controlled Spider Combat!");
+    println!("🚀 Hand tracking: MediaPipe + TensorFlow Lite system initializing...");
+    println!("🎮 Fallback controls: Arrow keys move body, 1-6 keys control limbs");
+    println!("🎥 Webcam: Check top-right corner for camera feed with hand landmarks");
+    println!("🔧 Debug: Press 'D' for physics debug, F12/ESC for inspector");
 }
