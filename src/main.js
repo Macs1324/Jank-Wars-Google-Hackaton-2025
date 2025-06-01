@@ -5,6 +5,9 @@ import { HandTrackingController } from './core/HandTrackingController.js';
 import { HandDebugRenderer } from './utils/HandDebugRenderer.js';
 import { Spider } from './game/Spider.js';
 import { PhysicsController } from './core/PhysicsController.js';
+import { SpiderController } from './game/SpiderController.js'; // Added import
+import { calculatePalmCoordinateSystem } from './utils/PalmCoordinateSystem.js'; // For debug
+import { CoordsFilter } from './utils/SimpleLowPassFilter.js'; // For smoothing
 import cannonDebugger from 'cannon-es-debugger';
 
 /**
@@ -33,8 +36,19 @@ class Game {
     physicsDebugger = null;
     /** @type {Spider | null} */
     player1Spider = null;
+    /** @type {SpiderController | null} */
+    player1Controller = null; // Added controller for player 1
     /** @type {Spider | null} */
     player2Spider = null;
+    /** @type {SpiderController | null} */
+    player2Controller = null; // Added controller for player 2
+
+    /** @type {THREE.Group | null} */
+    palmDebugGroup = null; // Main group for all palm debug visuals
+    /** @type {Array<THREE.Group>} */
+    palmDebugAxisSets = []; // To hold axis visuals for each hand (up to 2)
+    /** @type {Array<CoordsFilter>} */
+    palmCoordFilters = []; // To hold filters for each hand's palm coordinates
 
     /** @type {number} */
     lastFrameTime = 0;
@@ -46,6 +60,15 @@ class Game {
         this.lastFrameTime = performance.now();
 
         this.initThreeJS();
+
+        // For palm coordinate system debug
+        this.palmDebugGroup = new THREE.Group();
+        this.palmDebugGroup.name = "PalmDebugHelpers";
+        this.scene.add(this.palmDebugGroup);
+        this._initPalmDebugVisuals(2); // Initialize for up to 2 hands
+        for (let i = 0; i < 2; i++) { // Assuming max 2 hands
+            this.palmCoordFilters.push(new CoordsFilter(0.2, 0.3)); // Alpha for pos, alpha for rot
+        }
 
         this.physicsController = new PhysicsController();
         this.debugDisplay.append('Physics controller initialized.');
@@ -152,6 +175,16 @@ class Game {
         this.scene.add(this.player2Spider.getObject3D());
         this.debugDisplay.append('Player 2 Spider (Blue) created.');
 
+        // Initialize Spider Controllers
+        if (this.player1Spider && this.physicsController) {
+            this.player1Controller = new SpiderController(this.player1Spider, this.physicsController);
+            this.debugDisplay.append('Player 1 SpiderController created.');
+        }
+        if (this.player2Spider && this.physicsController) {
+            this.player2Controller = new SpiderController(this.player2Spider, this.physicsController);
+            this.debugDisplay.append('Player 2 SpiderController created.');
+        }
+
         // Ensure world matrices are updated before initializing leg physics
         this.scene.updateMatrixWorld(true); 
 
@@ -217,19 +250,99 @@ class Game {
         }
         */
 
+        const useWorldLandmarks = true; // Prefer MediaPipe's world landmarks for 3D control
+
         if (this.handTrackingController && this.handTrackingController.isInitialized &&
             this.webcamController && this.webcamController.isStarted) {
             this.handTrackingController.detectHands();
             const results = this.handTrackingController.getLatestResults();
+            console.log("MediaPipe Results:", results); // Added for debugging
 
             if (this.handDebugRenderer) {
                 this.handDebugRenderer.drawHands(results);
             }
 
-            // TODO: Pass hand data to spiders for updates & physics interactions
+            // Pass hand data to SpiderControllers
+            if (results && results.landmarks && results.landmarks.length > 0) { // Check landmarks for general hand detection, but use worldLandmarks if available
+                const landmarksToUse = useWorldLandmarks ? results.worldLandmarks : results.landmarks;
+
+                if (landmarksToUse && landmarksToUse.length > 0) {
+                    const numHandsDetected = Math.min(landmarksToUse.length, this.palmDebugAxisSets.length);
+
+                    for (let i = 0; i < numHandsDetected; i++) {
+                        const handLandmarks = landmarksToUse[i];
+                        const handedness = results.handedness[i][0].categoryName;
+                        const axisSet = this.palmDebugAxisSets[i];
+                        const coordFilter = this.palmCoordFilters[i];
+
+                        if (useWorldLandmarks && axisSet && coordFilter) {
+                            let rawPalmCoords = calculatePalmCoordinateSystem(handLandmarks, handedness);
+                            let palmCoords = rawPalmCoords;
+                            if (rawPalmCoords) {
+                                palmCoords = coordFilter.apply(rawPalmCoords);
+                            }
+                            
+                            // console.log(`Hand ${i} (${handedness}) Palm Coords:`, palmCoords);
+                            if (palmCoords) {
+                                // 0: originSphere, 1: forwardArrow, 2: upArrow, 3: rightArrow
+                                const originSphere = axisSet.children[0];
+                                const forwardArrow = axisSet.children[1];
+                                const upArrow = axisSet.children[2];
+                                const rightArrow = axisSet.children[3];
+
+                                originSphere.position.copy(palmCoords.origin);
+                                forwardArrow.position.copy(palmCoords.origin);
+                                forwardArrow.setDirection(palmCoords.forward);
+                                upArrow.position.copy(palmCoords.origin);
+                                upArrow.setDirection(palmCoords.up);
+                                rightArrow.position.copy(palmCoords.origin);
+                                rightArrow.setDirection(palmCoords.right);
+                                
+                                axisSet.visible = true;
+                            } else {
+                                axisSet.visible = false;
+                            }
+                        } else if (axisSet) { // No landmarks or no filter
+                            axisSet.visible = false;
+                            if(coordFilter) coordFilter.reset(); // Reset filter if no data for this hand
+                        }
+
+                        if (handedness === 'Left' && this.player1Controller) {
+                            this.player1Controller.update(handLandmarks, handedness, useWorldLandmarks);
+                        } else if (handedness === 'Right' && this.player2Controller) {
+                            this.player2Controller.update(handLandmarks, handedness, useWorldLandmarks);
+                        }
+                        // If only one hand detected, could try to assign it to P1 or based on last known
+                    }
+                     // Hide axis sets for hands not detected this frame
+                    for (let i = numHandsDetected; i < this.palmDebugAxisSets.length; i++) {
+                        this.palmDebugAxisSets[i].visible = false;
+                    }
+                } else { // No landmarksToUse (e.g. results.worldLandmarks was empty)
+                    this.palmDebugAxisSets.forEach(axisSet => axisSet.visible = false);
+                    this.palmCoordFilters.forEach(filter => filter.reset());
+                }
+            } else {
+                // No hands detected at all by HandTrackingController, or not initialized
+                this.palmDebugAxisSets.forEach(axisSet => axisSet.visible = false);
+                this.palmCoordFilters.forEach(filter => filter.reset());
+                if (this.player1Controller) {
+                    this.player1Controller.update(null, 'Left', useWorldLandmarks);
+                }
+                if (this.player2Controller) {
+                    this.player2Controller.update(null, 'Right', useWorldLandmarks);
+                }
+            }
         } else {
+            // Hand tracking is not active, clear the debug overlay and inform controllers
             if (this.handDebugRenderer) {
                 this.handDebugRenderer.clear();
+            }
+            if (this.player1Controller) {
+                this.player1Controller.update(null, 'Left', true); // Assuming world landmarks if we had data
+            }
+            if (this.player2Controller) {
+                this.player2Controller.update(null, 'Right', true);
             }
         }
         this.renderer.render(this.scene, this.camera);
@@ -239,6 +352,42 @@ class Game {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    _initPalmDebugVisuals(maxHands = 2) {
+        const AXIS_LENGTH = 0.15; // Increased axis length
+        const FWD_COLOR = 0x0000ff; // Blue for Z (Forward)
+        const UP_COLOR = 0x00ff00;  // Green for Y (Up/Normal)
+        const RIGHT_COLOR = 0xff0000; // Red for X (Right)
+
+        for (let i = 0; i < maxHands; i++) {
+            const axisSetGroup = new THREE.Group();
+            axisSetGroup.name = `PalmAxisSet_${i}`;
+
+            const originSphere = new THREE.Mesh(
+                new THREE.SphereGeometry(0.012), // Increased sphere radius
+                new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 })
+            );
+            originSphere.renderOrder = 999; // Ensure it's rendered on top
+            axisSetGroup.add(originSphere);
+
+            // Create arrows once, then update position and direction
+            const forwardArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,0), AXIS_LENGTH, FWD_COLOR, AXIS_LENGTH * 0.2, AXIS_LENGTH * 0.15);
+            const upArrow = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,0), AXIS_LENGTH, UP_COLOR, AXIS_LENGTH * 0.2, AXIS_LENGTH * 0.15);
+            const rightArrow = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0,0), AXIS_LENGTH, RIGHT_COLOR, AXIS_LENGTH * 0.2, AXIS_LENGTH * 0.15);
+            
+            [forwardArrow, upArrow, rightArrow].forEach(arrow => {
+                // Ensure all parts of the arrow helper are not depth tested and render on top
+                arrow.line.material = new THREE.MeshBasicMaterial({ color: arrow.line.material.color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 });
+                arrow.cone.material = new THREE.MeshBasicMaterial({ color: arrow.cone.material.color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 });
+                arrow.renderOrder = 999;
+                axisSetGroup.add(arrow);
+            });
+            
+            axisSetGroup.visible = false; // Start hidden
+            this.palmDebugAxisSets.push(axisSetGroup);
+            this.palmDebugGroup.add(axisSetGroup);
+        }
     }
 
     cleanup() {
