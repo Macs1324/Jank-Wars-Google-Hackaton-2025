@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Scene Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            color: white;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        #info {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            border: 2px solid rgba(0, 255, 136, 0.3);
+            z-index: 100;
+            max-width: 300px;
+        }
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h1>🕷️ 3D Scene Test</h1>
+        <p>Testing Three.js rendering</p>
+        <div id="status">Initializing...</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from '/node_modules/three/build/three.module.js';
+        import * as CANNON from '/node_modules/cannon-es/dist/cannon-es.js';
+
+        console.log('Starting 3D test...');
+        
+        let scene, camera, renderer, world;
+        let cube, spider;
+        let isRunning = false;
+
+        function init() {
+            console.log('Initializing Three.js...');
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x2a1810);
+            console.log('Scene created');
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 10);
+            camera.lookAt(0, 0, 0);
+            console.log('Camera created');
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Add to DOM
+            document.body.appendChild(renderer.domElement);
+            console.log('Renderer added to DOM');
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x505050, 1.2);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.8);
+            directionalLight.position.set(10, 10, 5);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            console.log('Lighting added');
+
+            // Ground
+            const groundGeometry = new THREE.PlaneGeometry(30, 30);
+            const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x2a1810 });
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+            console.log('Ground added');
+
+            // Test cube
+            const cubeGeometry = new THREE.BoxGeometry(1, 1, 1);
+            const cubeMaterial = new THREE.MeshLambertMaterial({ color: 0xff4444 });
+            cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+            cube.position.set(-3, 1, 0);
+            cube.castShadow = true;
+            scene.add(cube);
+            console.log('Test cube added');
+
+            // Create a simple spider
+            createSpider();
+
+            // Physics
+            world = new CANNON.World();
+            world.gravity.set(0, -9.82, 0);
+            console.log('Physics world created');
+
+            // Start render loop
+            isRunning = true;
+            animate();
+            
+            document.getElementById('status').textContent = '✅ 3D Scene running!';
+            console.log('3D test initialized successfully');
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize);
+            
+            // Add keyboard controls
+            document.addEventListener('keydown', onKeyDown);
+        }
+
+        function createSpider() {
+            spider = new THREE.Group();
+
+            // Spider body
+            const bodyGeometry = new THREE.SphereGeometry(0.5, 8, 6);
+            const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x4444ff });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            body.castShadow = true;
+            spider.add(body);
+
+            // Create 8 spider legs
+            for (let i = 0; i < 8; i++) {
+                const leg = createSpiderLeg(0x4444ff, i);
+                const angle = (i / 8) * Math.PI * 2;
+                const radius = 0.7;
+                leg.position.set(
+                    Math.cos(angle) * radius,
+                    -0.2,
+                    Math.sin(angle) * radius
+                );
+                leg.rotation.y = angle;
+                spider.add(leg);
+            }
+
+            spider.position.set(3, 1, 0);
+            scene.add(spider);
+            console.log('Spider created');
+        }
+
+        function createSpiderLeg(color, legIndex) {
+            const leg = new THREE.Group();
+
+            // Upper leg
+            const upperGeometry = new THREE.CylinderGeometry(0.06, 0.04, 1.0);
+            const upperMaterial = new THREE.MeshLambertMaterial({ color });
+            const upper = new THREE.Mesh(upperGeometry, upperMaterial);
+            upper.position.set(0, -0.5, 0);
+            upper.castShadow = true;
+            leg.add(upper);
+
+            // Knee joint
+            const kneeGeometry = new THREE.SphereGeometry(0.08);
+            const kneeMaterial = new THREE.MeshLambertMaterial({ color: color * 0.7 });
+            const knee = new THREE.Mesh(kneeGeometry, kneeMaterial);
+            knee.position.set(0, -1.0, 0);
+            knee.castShadow = true;
+            leg.add(knee);
+
+            // Lower leg
+            const lowerGeometry = new THREE.CylinderGeometry(0.04, 0.03, 0.8);
+            const lowerMaterial = new THREE.MeshLambertMaterial({ color: color * 0.8 });
+            const lower = new THREE.Mesh(lowerGeometry, lowerMaterial);
+            lower.position.set(0, -1.4, 0);
+            lower.castShadow = true;
+            leg.add(lower);
+
+            // Foot
+            const footGeometry = new THREE.SphereGeometry(0.06);
+            const footMaterial = new THREE.MeshLambertMaterial({ color: color * 0.5 });
+            const foot = new THREE.Mesh(footGeometry, footMaterial);
+            foot.position.set(0, -1.8, 0);
+            foot.castShadow = true;
+            leg.add(foot);
+
+            return leg;
+        }
+
+        function animate() {
+            if (!isRunning) return;
+            
+            requestAnimationFrame(animate);
+
+            // Rotate cube for visual feedback
+            if (cube) {
+                cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+            }
+
+            // Animate spider legs
+            if (spider) {
+                const time = Date.now() * 0.001;
+                spider.children.forEach((child, index) => {
+                    if (index > 0) { // Skip body (index 0)
+                        const legTime = time + (index - 1) * 0.5;
+                        child.rotation.x = Math.sin(legTime) * 0.3;
+                        child.rotation.z = Math.cos(legTime) * 0.2;
+                    }
+                });
+            }
+
+            // Update physics
+            if (world) {
+                world.fixedStep(1/60);
+            }
+
+            // Render
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            console.log('Key pressed:', event.key);
+            const speed = 0.1;
+            
+            switch (event.key) {
+                case 'ArrowUp':
+                case 'w':
+                case 'W':
+                    spider.position.z -= speed;
+                    break;
+                case 'ArrowDown':
+                case 's':
+                case 'S':
+                    spider.position.z += speed;
+                    break;
+                case 'ArrowLeft':
+                case 'a':
+                case 'A':
+                    spider.position.x -= speed;
+                    break;
+                case 'ArrowRight':
+                case 'd':
+                case 'D':
+                    spider.position.x += speed;
+                    break;
+            }
+        }
+
+        // Start the test
+        window.addEventListener('load', () => {
+            console.log('DOM loaded, starting 3D test...');
+            init();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            isRunning = false;
+        });
+
+        // Export for debugging
+        window.testScene = { scene, camera, renderer, world, cube, spider };
+    </script>
+</body>
+</html>
