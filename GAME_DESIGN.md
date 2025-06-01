@@ -37,6 +37,8 @@ Left Hand → Red Spider     Right Hand → Blue Spider
 🤙 Pinky  → Back leg       🤙 Pinky  → Back leg
 ```
 
+- If a hand is lost or disappears from view, the corresponding spider will enter a ragdoll physics state until the hand is re-detected.
+
 ### Movement Mechanics
 - **Walking**: Alternating finger "steps" create natural spider gait
 - **Running**: Rapid finger movements for speed bursts

@@ -13,9 +13,13 @@
     "vite": "^6.3.5"
   },
   "dependencies": {
-    "@mediapipe/camera_utils": "^0.3.1675466862",
-    "@mediapipe/hands": "^0.4.1675469240",
+    "@mediapipe/tasks-vision": "^0.10.14",
     "cannon-es": "^0.20.0",
     "three": "^0.177.0"
-  }
+  },
+  "description": "**The world's first finger-controlled spider fighting game!** Control ragdoll spiders using real-time hand tracking - each finger controls a spider leg.",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
