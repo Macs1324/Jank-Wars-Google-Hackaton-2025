@@ -32,8 +32,6 @@ export class Spider {
     static THIGH_RADIUS = 0.035;
     static THIGH_LENGTH = 0.18;
 
-    static KNEE_RADIUS = 0.04;
-
     static TIBIA_RADIUS = 0.03;
     static TIBIA_LENGTH = 0.28;
 
@@ -99,7 +97,6 @@ export class Spider {
 
     _createLegs() { // Creates the visual structure of the legs
         const thighGeometry = new THREE.CapsuleGeometry(Spider.THIGH_RADIUS, Spider.THIGH_LENGTH, 6, 10);
-        const kneeGeometry = new THREE.SphereGeometry(Spider.KNEE_RADIUS, 8, 6);
         const tibiaGeometry = new THREE.CapsuleGeometry(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH, 6, 10);
 
         const legAttachmentAngles = [
@@ -141,11 +138,6 @@ export class Spider {
             kneeGroup.name = `knee_group_${i}`;
             kneeGroup.position.y = Spider.THIGH_LENGTH + Spider.THIGH_RADIUS; // At tip of thigh
             legGroup.add(kneeGroup);
-
-            // Knee Visual
-            const kneeMesh = new THREE.Mesh(kneeGeometry, this._gummyMaterial);
-            kneeMesh.name = `knee_${i}`;
-            kneeGroup.add(kneeMesh); // At kneeGroup's origin
 
             // Tibia Mesh
             const tibiaMesh = new THREE.Mesh(tibiaGeometry, this._gummyMaterial);

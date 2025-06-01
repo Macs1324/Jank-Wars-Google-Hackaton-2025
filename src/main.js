@@ -53,6 +53,7 @@ class Game {
         this.setupScene(); // Spiders will be created here, need physicsController available
         
         // Initialize physics debugger
+        /*
         if (this.scene && this.physicsController) {
             this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
                 // options...
@@ -68,6 +69,7 @@ class Game {
             });
             this.debugDisplay.append('Physics debugger initialized.');
         }
+        */
         
         this.debugDisplay.append('Scene initialized.');
 
@@ -209,9 +211,11 @@ class Game {
             this.physicsController.update(deltaTime);
         }
 
+        /*
         if (this.physicsDebugger) {
             this.physicsDebugger.update();
         }
+        */
 
         if (this.handTrackingController && this.handTrackingController.isInitialized &&
             this.webcamController && this.webcamController.isStarted) {
