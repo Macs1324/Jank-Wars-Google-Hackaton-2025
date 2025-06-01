@@ -1,8 +1,9 @@
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 
 /**
  * @fileoverview Defines the Spider class for the game.
- * Spiders are the player-controlled characters with a "lucid gummy" appearance.
+ * Spiders are the player-controlled characters with a \"lucid gummy\" appearance.
  */
 
 export class Spider {
@@ -10,14 +11,23 @@ export class Spider {
     gameObject;
     /** @type {THREE.Mesh} The mesh for the spider's body. */
     bodyMesh;
-    /** @type {THREE.Group[]} Array holding the THREE.Group objects for each leg. */
+    /** @type {THREE.Group[]} Array holding the THREE.Group objects for each leg's visual assembly. */
     legGroups = [];
     /** @type {THREE.MeshPhysicalMaterial} The shared material for the spider. */
     _gummyMaterial;
 
+    /** @type {CANNON.Body | null} The main physics body for the spider. */
+    physicsBody = null;
+    /** @type {CANNON.Body[]} Physics bodies for the thigh segments. */
+    thighBodies = [];
+    /** @type {CANNON.Body[]} Physics bodies for the tibia segments. */
+    tibiaBodies = [];
+    /** @type {CANNON.Constraint[]} Constraints used for the legs. */
+    legConstraints = [];
+
     // --- Constants ---
     static LEG_COUNT = 5;
-    static BODY_RADIUS = 0.20; // Smaller body
+    static BODY_RADIUS = 0.20;
 
     static THIGH_RADIUS = 0.035;
     static THIGH_LENGTH = 0.18;
@@ -25,23 +35,22 @@ export class Spider {
     static KNEE_RADIUS = 0.04;
 
     static TIBIA_RADIUS = 0.03;
-    static TIBIA_LENGTH = 0.28; // Length to reach ground
+    static TIBIA_LENGTH = 0.28;
 
     // Target Y position for the center of the spider's body
-    static INITIAL_BODY_Y = 0.25; // Adjusted based on leg geometry
+    static INITIAL_BODY_Y = 0.33; // Adjusted to prevent visual sinking with body-only physics
 
     /**
      * Creates a new Spider instance.
-     * @param {number} color The color of the spider (e.g., 0xff0000 for red).
-     * @param {THREE.Vector3} [initialPosition] Optional initial position. Defaults to a standing height.
+     * @param {number} color The color of the spider.
+     * @param {import('../core/PhysicsController.js').PhysicsController} physicsController Instance of the physics controller.
+     * @param {THREE.Vector3} [initialPosition] Optional initial position.
      */
-    constructor(color, initialPosition) {
+    constructor(color, physicsController, initialPosition) {
         this.gameObject = new THREE.Group();
-        if (initialPosition) {
-            this.gameObject.position.copy(initialPosition);
-        } else {
-            this.gameObject.position.set(0, Spider.INITIAL_BODY_Y, 0);
-        }
+        this.gameObject.name = "SpiderGameObject"; 
+        const actualInitialPosition = initialPosition ? initialPosition.clone() : new THREE.Vector3(0, Spider.INITIAL_BODY_Y, 0);
+        this.gameObject.position.copy(actualInitialPosition);
 
         this._gummyMaterial = new THREE.MeshPhysicalMaterial({
             color: color,
@@ -55,9 +64,24 @@ export class Spider {
             side: THREE.FrontSide,
         });
 
-        this._createBody();
-        this._createLegs();
+        this._createBody(); // Create visual body
+        this._createLegs(); // Create visual legs
 
+        // Create main physics body
+        if (physicsController) {
+            const bodyShape = new CANNON.Sphere(Spider.BODY_RADIUS);
+            this.physicsBody = new CANNON.Body({
+                mass: 1,
+                position: new CANNON.Vec3().copy(actualInitialPosition),
+                shape: bodyShape,
+                material: physicsController.createDefaultMaterial(),
+                angularDamping: 0.5,
+            });
+            this.physicsBody.quaternion.copy(this.gameObject.quaternion); // Match initial visual orientation
+            physicsController.addBody(this.bodyMesh, this.physicsBody); // Link visual bodyMesh to physicsBody
+        }
+        
+        // Make all visual meshes cast shadows
         this.gameObject.traverse(child => {
             if (child.isMesh) {
                 child.castShadow = true;
@@ -69,113 +93,176 @@ export class Spider {
     _createBody() {
         const bodyGeometry = new THREE.SphereGeometry(Spider.BODY_RADIUS, 24, 16);
         this.bodyMesh = new THREE.Mesh(bodyGeometry, this._gummyMaterial);
+        this.bodyMesh.name = "SpiderBodyMesh";
         this.gameObject.add(this.bodyMesh);
     }
 
-    _createLegs() {
+    _createLegs() { // Creates the visual structure of the legs
         const thighGeometry = new THREE.CapsuleGeometry(Spider.THIGH_RADIUS, Spider.THIGH_LENGTH, 6, 10);
         const kneeGeometry = new THREE.SphereGeometry(Spider.KNEE_RADIUS, 8, 6);
         const tibiaGeometry = new THREE.CapsuleGeometry(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH, 6, 10);
 
-        // Angles for leg distribution around the Y-axis (0 is +Z, right-hand rule: +Y up, angle increases counter-clockwise)
-        const legAttachmentAngles = [ // Tuned for 5 legs: 2 front, 2 mid, 1 back
-            -Math.PI / 3.5,    // Front-Right (~ -51 deg)
-             Math.PI / 3.5,     // Front-Left (~  51 deg)
-            -Math.PI * 0.75,   // Mid-Right (~ -135 deg)
-             Math.PI * 0.75,    // Mid-Left  (~  135 deg)
-             Math.PI           // Back (180 deg)
+        const legAttachmentAngles = [
+            -Math.PI / 3.5,   // Front-Right
+             Math.PI / 3.5,   // Front-Left
+            -Math.PI * 0.75,  // Mid-Right
+             Math.PI * 0.75,  // Mid-Left
+             Math.PI          // Back
         ];
 
-        // Angle for thighs to tilt slightly upwards from the horizontal plane
-        const thighUpwardTilt = Math.PI / 20; // ~9 degrees
-
-        // Angle for the knee to bend downwards
-        const kneeBend = Math.PI / 1.8; // ~100 degrees relative to thigh direction
+        const thighUpwardTilt = Math.PI / 20; // ~9 degrees upward from horizontal
+        const kneeBend = Math.PI / 1.75;      // ~102.8 degrees bend at the knee
 
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
-            const legGroup = new THREE.Group(); // This group controls the thigh's base position and orientation
+            const legGroup = new THREE.Group(); // Controls overall thigh orientation and base position
             legGroup.name = `leg_group_${i}`;
 
-            // 1. Position legGroup on the body's equator
             const angle = legAttachmentAngles[i];
             const attachX = Spider.BODY_RADIUS * Math.sin(angle);
             const attachZ = Spider.BODY_RADIUS * Math.cos(angle);
-            legGroup.position.set(attachX, 0, attachZ); // Relative to spider body center
+            legGroup.position.set(attachX, 0, attachZ); // Position on body equator
 
-            // 2. Orient legGroup (thigh direction)
-            // The thigh (capsule) length is along its local Y-axis.
-            // a. Aim local Y-axis radially outward in the XZ plane
-            legGroup.lookAt(this.bodyMesh.position); // legGroup's -Z points to body center
-            legGroup.rotateY(Math.PI);               // legGroup's +Z points radially outward
-            legGroup.rotateX(Math.PI / 2);           // Now legGroup's +Y points radially outward (was +Z)
+            // Orient legGroup: local Y-axis (thigh direction) points radially out, then tilts up
+            legGroup.lookAt(this.bodyMesh.position); // -Z towards body center
+            legGroup.rotateY(Math.PI);               // +Z radially outward
+            legGroup.rotateX(Math.PI / 2);           // +Y radially outward (was +Z)
+            legGroup.rotateZ(thighUpwardTilt);       // Tilt +Y (thigh) upwards around local Z
 
-            // b. Apply slight upward tilt to the thigh
-            // Rotate around legGroup's local Z-axis (which is now horizontal and tangential)
-            legGroup.rotateZ(thighUpwardTilt);
+            this.gameObject.add(legGroup); // Add to main spider assembly
 
-            this.gameObject.add(legGroup);
-
-
-            // 3. Create Thigh (upper leg segment)
+            // Thigh Mesh
             const thighMesh = new THREE.Mesh(thighGeometry, this._gummyMaterial);
             thighMesh.name = `thigh_${i}`;
-            // Position thigh capsule along legGroup's local Y-axis
-            thighMesh.position.y = Spider.THIGH_LENGTH / 2 + Spider.THIGH_RADIUS;
+            thighMesh.position.y = Spider.THIGH_LENGTH / 2 + Spider.THIGH_RADIUS; // Along legGroup's local Y
             legGroup.add(thighMesh);
 
-
-            // 4. Create Knee Group (for knee joint and tibia)
+            // Knee Group (controls tibia orientation relative to thigh)
             const kneeGroup = new THREE.Group();
             kneeGroup.name = `knee_group_${i}`;
-            // Position kneeGroup at the tip of the thigh (in legGroup's local space)
-            kneeGroup.position.y = Spider.THIGH_LENGTH + Spider.THIGH_RADIUS;
+            kneeGroup.position.y = Spider.THIGH_LENGTH + Spider.THIGH_RADIUS; // At tip of thigh
             legGroup.add(kneeGroup);
-            // kneeGroup initially inherits legGroup's orientation. Its local Y points along thigh.
 
-
-            // 5. Create Knee visual
+            // Knee Visual
             const kneeMesh = new THREE.Mesh(kneeGeometry, this._gummyMaterial);
             kneeMesh.name = `knee_${i}`;
-            // Knee mesh is at the origin of kneeGroup
-            kneeGroup.add(kneeMesh);
+            kneeGroup.add(kneeMesh); // At kneeGroup's origin
 
-
-            // 6. Create Tibia (lower leg segment)
+            // Tibia Mesh
             const tibiaMesh = new THREE.Mesh(tibiaGeometry, this._gummyMaterial);
             tibiaMesh.name = `tibia_${i}`;
-            // Position tibia capsule along kneeGroup's local Y-axis
-            tibiaMesh.position.y = Spider.TIBIA_LENGTH / 2 + Spider.TIBIA_RADIUS;
+            tibiaMesh.position.y = Spider.TIBIA_LENGTH / 2 + Spider.TIBIA_RADIUS; // Along kneeGroup's local Y
             kneeGroup.add(tibiaMesh);
+            
+            kneeGroup.rotateX(kneeBend); // Apply knee bend
 
-            // 7. Apply Knee Bend
-            // Rotate kneeGroup around its local X-axis to bend the tibia downwards.
-            // Positive rotation around local X bends local Y "backwards/downwards" using right-hand rule.
-            kneeGroup.rotateX(kneeBend);
-
-            this.legGroups.push(legGroup); // Store for potential future manipulation
+            this.legGroups.push(legGroup); // Store for physics initialization
         }
     }
 
     /**
-     * Placeholder for updates from hand tracking.
-     * @param {object} handData - Processed hand data.
+     * Initializes the physics bodies and constraints for the spider's legs.
+     * Call this *after* the spider's gameObject is in the scene and matrices are updated.
+     * @param {import('../core/PhysicsController.js').PhysicsController} physicsController
      */
-    update(handData) {
-        // TODO: Implement spider control logic
+    initializeLegPhysics(physicsController) {
+        if (!physicsController || !this.physicsBody) {
+            console.warn("Spider: Cannot initialize leg physics without physicsController or main physicsBody.");
+            return;
+        }
+
+        this.thighBodies = []; // Clear any previous (e.g. from multiple calls)
+        this.tibiaBodies = [];
+        this.legConstraints = [];
+
+        for (let i = 0; i < Spider.LEG_COUNT; i++) {
+            const legGroup = this.legGroups[i];
+            const thighMesh = legGroup.getObjectByName(`thigh_${i}`);
+            const kneeGroup = legGroup.getObjectByName(`knee_group_${i}`);
+            const tibiaMesh = kneeGroup ? kneeGroup.getObjectByName(`tibia_${i}`) : null;
+
+            if (!thighMesh || !kneeGroup || !tibiaMesh) {
+                console.error(`Spider: Could not find all visual leg parts for leg ${i} for physics. Thigh: ${!!thighMesh}, KneeGroup: ${!!kneeGroup}, Tibia: ${!!tibiaMesh}`);
+                continue;
+            }
+
+            // --- Thigh Physics ---
+            const thighHalfExtents = new CANNON.Vec3(Spider.THIGH_RADIUS, Spider.THIGH_LENGTH / 2, Spider.THIGH_RADIUS);
+            const thighShape = new CANNON.Box(thighHalfExtents);
+
+            const thighWorldPosition = new THREE.Vector3();
+            thighMesh.getWorldPosition(thighWorldPosition);
+            const thighWorldQuaternion = new THREE.Quaternion();
+            thighMesh.getWorldQuaternion(thighWorldQuaternion);
+
+            const thighCannonBody = new CANNON.Body({
+                mass: 0.1,
+                position: new CANNON.Vec3().copy(thighWorldPosition),
+                quaternion: new CANNON.Quaternion().copy(thighWorldQuaternion),
+                shape: thighShape,
+                material: physicsController.createDefaultMaterial(),
+                angularDamping: 0.4, linearDamping: 0.4,
+                collisionFilterGroup: 2, collisionFilterMask: 1 
+            });
+            this.thighBodies.push(thighCannonBody);
+            physicsController.addBody(thighMesh, thighCannonBody);
+
+            const pivotOnBody = new CANNON.Vec3().copy(legGroup.position); // In body's local space
+            const bodyToThighPivotOnThigh = new CANNON.Vec3(0, -Spider.THIGH_LENGTH / 2, 0); // Thigh's local base
+
+            const bodyToThighConstraint = new CANNON.PointToPointConstraint(
+                this.physicsBody, pivotOnBody,
+                thighCannonBody, bodyToThighPivotOnThigh
+            );
+            physicsController.world.addConstraint(bodyToThighConstraint);
+            this.legConstraints.push(bodyToThighConstraint);
+
+            // --- Tibia Physics ---
+            const tibiaHalfExtents = new CANNON.Vec3(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH / 2, Spider.TIBIA_RADIUS);
+            const tibiaShape = new CANNON.Box(tibiaHalfExtents);
+
+            const tibiaWorldPosition = new THREE.Vector3();
+            tibiaMesh.getWorldPosition(tibiaWorldPosition);
+            const tibiaWorldQuaternion = new THREE.Quaternion();
+            tibiaMesh.getWorldQuaternion(tibiaWorldQuaternion);
+
+            const tibiaCannonBody = new CANNON.Body({
+                mass: 0.08,
+                position: new CANNON.Vec3().copy(tibiaWorldPosition),
+                quaternion: new CANNON.Quaternion().copy(tibiaWorldQuaternion),
+                shape: tibiaShape,
+                material: physicsController.createDefaultMaterial(),
+                angularDamping: 0.4, linearDamping: 0.4,
+                collisionFilterGroup: 2, collisionFilterMask: 1
+            });
+            this.tibiaBodies.push(tibiaCannonBody);
+            physicsController.addBody(tibiaMesh, tibiaCannonBody);
+
+            const thighToTibiaPivotOnThigh = new CANNON.Vec3(0, Spider.THIGH_LENGTH / 2, 0); // Thigh's local tip
+            const thighToTibiaPivotOnTibia = new CANNON.Vec3(0, -Spider.TIBIA_LENGTH / 2, 0); // Tibia's local base
+            const hingeAxisLocal = new CANNON.Vec3(1, 0, 0); // Hinge around local X
+
+            const kneeConstraint = new CANNON.HingeConstraint(
+                thighCannonBody, tibiaCannonBody,
+                {
+                    pivotA: thighToTibiaPivotOnThigh, pivotB: thighToTibiaPivotOnTibia,
+                    axisA: hingeAxisLocal.clone(), axisB: hingeAxisLocal.clone(),
+                }
+            );
+            physicsController.world.addConstraint(kneeConstraint);
+            this.legConstraints.push(kneeConstraint);
+        }
     }
 
-    /**
-     * Returns the main Three.js object for this spider.
-     * @returns {THREE.Group}
-     */
+    update(handData) {
+        // TODO: Implement spider control logic based on handData
+        // This will involve applying forces/torques to physicsBody, thighBodies, tibiaBodies
+        // or setting target positions/rotations for constraints.
+    }
+
     getObject3D() {
         return this.gameObject;
     }
 
-    /**
-     * Sets the visibility of the spider.
-     * @param {boolean} visible
-     */
     setVisible(visible) {
         this.gameObject.visible = visible;
     }

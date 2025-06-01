@@ -4,6 +4,8 @@ import { WebcamController } from './core/WebcamController.js';
 import { HandTrackingController } from './core/HandTrackingController.js';
 import { HandDebugRenderer } from './utils/HandDebugRenderer.js';
 import { Spider } from './game/Spider.js';
+import { PhysicsController } from './core/PhysicsController.js';
+import cannonDebugger from 'cannon-es-debugger';
 
 /**
  * @fileoverview Main entry point for the Jank Wars game.
@@ -25,25 +27,54 @@ class Game {
     handTrackingController = null;
     /** @type {HandDebugRenderer | null} */
     handDebugRenderer = null;
+    /** @type {PhysicsController | null} */
+    physicsController = null;
+    /** @type {ReturnType<typeof cannonDebugger> | null} */
+    physicsDebugger = null;
     /** @type {Spider | null} */
-    player1Spider = null; // Red spider, typically left hand
+    player1Spider = null;
     /** @type {Spider | null} */
-    player2Spider = null; // Blue spider, typically right hand
+    player2Spider = null;
+
+    /** @type {number} */
+    lastFrameTime = 0;
 
     constructor() {
         this.debugDisplay = new DebugDisplay('debug-info');
         this.debugDisplay.update('Jank Wars - Initializing...');
 
+        this.lastFrameTime = performance.now();
+
         this.initThreeJS();
-        this.setupScene();
+
+        this.physicsController = new PhysicsController();
+        this.debugDisplay.append('Physics controller initialized.');
+
+        this.setupScene(); // Spiders will be created here, need physicsController available
+        
+        // Initialize physics debugger
+        if (this.scene && this.physicsController) {
+            this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
+                // options...
+                color: 0xff0000, // Default color for shapes
+                scale: 1, // Scale of the debug meshes
+                onInit: (body, mesh, shape) => {
+                    // You can customize the mesh here if needed
+                    // For example, make constraints invisible by default
+                    if (mesh.isLineSegments) { // Constraints are often LineSegments
+                        // mesh.visible = false;
+                    }
+                },
+            });
+            this.debugDisplay.append('Physics debugger initialized.');
+        }
         
         this.debugDisplay.append('Scene initialized.');
 
         this.webcamController = new WebcamController('webcam-feed');
-        // initWebcam will now also handle hand tracking initialization
         this.initWebcamAndHandTracking(); 
 
-        this.animate = this.animate.bind(this); // Bind once
+        this.animate = this.animate.bind(this);
         this.animate();
 
         window.addEventListener('resize', this.onWindowResize.bind(this), false);
@@ -58,11 +89,11 @@ class Game {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // default THREE.PCFShadowMap
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
         // Scene
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue
 
         // Camera
         this.camera = new THREE.PerspectiveCamera(
@@ -71,19 +102,18 @@ class Game {
             0.1, // near
             1000 // far
         );
-        this.camera.position.set(0, 1.5, 4); // Position camera slightly above and back
+        this.camera.position.set(0, 1.5, 4); 
         this.camera.lookAt(0, 0, 0);
     }
 
     setupScene() {
         // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7); // Brighter ambient light
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
         this.scene.add(ambientLight);
 
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6); // Softer directional light
-        directionalLight.position.set(10, 15, 10); // Adjusted position for potentially better shadow angles
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(10, 15, 10);
         directionalLight.castShadow = true;
-        // Configure shadow properties
         directionalLight.shadow.mapSize.width = 1024;
         directionalLight.shadow.mapSize.height = 1024;
         directionalLight.shadow.camera.near = 0.5;
@@ -94,38 +124,42 @@ class Game {
         directionalLight.shadow.camera.bottom = -10;
         this.scene.add(directionalLight);
 
-        // Ground plane
+        // Ground plane (Visual)
         const groundGeometry = new THREE.PlaneGeometry(20, 20);
         const groundMaterial = new THREE.MeshStandardMaterial({
-            color: 0x98FB98, // PaleGreen, for a more cheerful ground
-            roughness: 0.9,  // More matte
-            metalness: 0.0,  // Non-metallic, cartoonish
+            color: 0x98FB98, // PaleGreen
+            roughness: 0.9,
+            metalness: 0.0,
         });
-        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-        ground.rotation.x = -Math.PI / 2; // Rotate to be horizontal
-        ground.receiveShadow = true;
-        this.scene.add(ground);
-
-        // Example Cube (optional, for testing)
-        // const cubeGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-        // const cubeMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-        // const cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
-        // cube.position.set(0, 0.25, 0);
-        // cube.castShadow = true;
-        // this.scene.add(cube);
+        const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
+        groundMesh.rotation.x = -Math.PI / 2;
+        groundMesh.receiveShadow = true;
+        this.scene.add(groundMesh);
 
         // Create Spiders
-        const spiderYPosition = Spider.BODY_RADIUS; // Place them on the ground
+        const initialFallHeightOffset = 0.6; 
+        const spiderBaseY = Spider.INITIAL_BODY_Y;
 
         // Player 1 (Red Spider)
-        this.player1Spider = new Spider(0xff0000, new THREE.Vector3(-1.5, spiderYPosition, 0));
+        this.player1Spider = new Spider(0xff0000, this.physicsController, new THREE.Vector3(-1.0, spiderBaseY + initialFallHeightOffset, 0));
         this.scene.add(this.player1Spider.getObject3D());
         this.debugDisplay.append('Player 1 Spider (Red) created.');
 
         // Player 2 (Blue Spider)
-        this.player2Spider = new Spider(0x0000ff, new THREE.Vector3(1.5, spiderYPosition, 0));
+        this.player2Spider = new Spider(0x0000ff, this.physicsController, new THREE.Vector3(1.0, spiderBaseY + initialFallHeightOffset, 0));
         this.scene.add(this.player2Spider.getObject3D());
         this.debugDisplay.append('Player 2 Spider (Blue) created.');
+
+        // Ensure world matrices are updated before initializing leg physics
+        this.scene.updateMatrixWorld(true); 
+
+        if (this.player1Spider) {
+            this.player1Spider.initializeLegPhysics(this.physicsController);
+        }
+        if (this.player2Spider) {
+            this.player2Spider.initializeLegPhysics(this.physicsController);
+        }
+        this.debugDisplay.append('Spider leg physics initialization attempted.');
     }
 
     async initWebcamAndHandTracking() {
@@ -138,13 +172,6 @@ class Game {
                 this.debugDisplay.append('Initializing Hand Tracking...');
                 this.handTrackingController = new HandTrackingController(this.webcamController.videoElement);
                 
-                // Optional: Set a callback for results directly if needed elsewhere
-                // this.handTrackingController.setOnResultsCallback((results) => {
-                //     if (results.landmarks && results.landmarks.length > 0) {
-                //         // console.log(`HandTrackingController Results: ${results.landmarks.length} hands detected.`);
-                //     }
-                // });
-                //
                 await this.handTrackingController.initialize();
                 this.debugDisplay.append('Hand Tracking initialized successfully.');
 
@@ -155,7 +182,6 @@ class Game {
                 } catch (e) {
                     console.error("Failed to initialize HandDebugRenderer:", e);
                     this.debugDisplay.append(`Error initializing Hand Debug Renderer: ${e.message}`);
-                    // Continue without it if it fails
                 }
 
             } else {
@@ -166,7 +192,6 @@ class Game {
             console.error("Failed to start webcam or hand tracking:", error);
             this.debugDisplay.append(`Error during setup: ${error.message}`);
             this.debugDisplay.append('Proceeding without webcam/hand tracking.');
-            // Potentially hide the video element if it failed
             if (this.webcamController.videoElement) {
                 this.webcamController.videoElement.style.display = 'none';
             }
@@ -174,43 +199,35 @@ class Game {
     }
 
     animate() {
+        const now = performance.now();
+        const deltaTime = (now - this.lastFrameTime) / 1000;
+        this.lastFrameTime = now;
+
         requestAnimationFrame(this.animate);
 
-        // Update game logic here (e.g., spider movements, physics)
+        if (this.physicsController) {
+            this.physicsController.update(deltaTime);
+        }
+
+        if (this.physicsDebugger) {
+            this.physicsDebugger.update();
+        }
+
         if (this.handTrackingController && this.handTrackingController.isInitialized &&
             this.webcamController && this.webcamController.isStarted) {
             this.handTrackingController.detectHands();
             const results = this.handTrackingController.getLatestResults();
 
             if (this.handDebugRenderer) {
-                // HandDebugRenderer\'s drawHands method will clear the canvas
-                // if results are null or no landmarks are present.
                 this.handDebugRenderer.drawHands(results);
             }
 
-            // TODO: Pass hand data to spiders for updates
-            // if (results && results.landmarks) {
-            //     if (this.player1Spider && results.handedness[0] && results.handedness[0][0].categoryName === 'Left') {
-            //         this.player1Spider.update(results.landmarks[0]); // Assuming first detected hand is left
-            //     } else if (this.player1Spider && results.handedness[1] && results.handedness[1][0].categoryName === 'Left') {
-            //         this.player1Spider.update(results.landmarks[1]);
-            //     }
-            //     // Add similar logic for player2Spider and 'Right' hand
-            // }
-
-
+            // TODO: Pass hand data to spiders for updates & physics interactions
         } else {
-            // Hand tracking is not active, clear the debug overlay
             if (this.handDebugRenderer) {
                 this.handDebugRenderer.clear();
             }
         }
-
-        // Example: Make spiders do a little dance if no hand tracking for testing
-        // if (this.player1Spider) this.player1Spider.getObject3D().rotation.y += 0.005;
-        // if (this.player2Spider) this.player2Spider.getObject3D().rotation.x -= 0.005;
-
-
         this.renderer.render(this.scene, this.camera);
     }
 
@@ -229,9 +246,7 @@ class Game {
         if (this.handTrackingController) {
             this.handTrackingController.dispose().catch(err => console.error("Error disposing hand tracker:", err));
         }
-        // Additional cleanup for Three.js resources might be needed if not automatically handled
-        // For example, disposing geometries, materials, textures if they are not garbage collected.
-        // renderer.dispose(); // if renderer itself needs cleanup.
+        // Future: Dispose Three.js resources, physics resources if necessary
     }
 }
 
