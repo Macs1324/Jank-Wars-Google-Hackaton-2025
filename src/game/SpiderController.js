@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { calculatePalmCoordinateSystem, worldToPalmLocal } from '../utils/PalmCoordinateSystem.js';
-import { CoordsFilter } from '../utils/SimpleLowPassFilter.js'; // Added for smoothing
+import { CoordsFilter, SimpleLowPassFilter } from '../utils/SimpleLowPassFilter.js'; // Added for smoothing
 
 /**
  * @fileoverview Defines the SpiderController class, responsible for translating
@@ -29,16 +29,33 @@ export class SpiderController {
     /** @type {CoordsFilter} */
     palmCoordsFilter;
 
+    /** @type {Object<string, import('../utils/SimpleLowPassFilter.js').SimpleLowPassFilter>} */
+    fingerSignalFilters = {}; // One filter per finger
+
+    /**
+     * Stores the index of the leg that was last actively controlled by this controller.
+     * Used to unhighlight the leg when control stops.
+     * @type {number | null}
+     * @private
+     */
+    _lastControlledLegIndex = null;
+
     /**
      * Configuration for leg joint control.
      * @type {{ KNEE_P_GAIN: number, KNEE_MAX_FORCE: number, FINGER_Y_TO_KNEE_SCALE: number, MIN_KNEE_ANGLE: number, MAX_KNEE_ANGLE: number }}
      */
     legControlConfig = {
-        KNEE_P_GAIN: 5,         // Proportional gain for knee motor speed
-        KNEE_MAX_FORCE: 5,      // Max force for the knee motor
-        FINGER_Y_TO_KNEE_SCALE: Math.PI / 2, // Scales finger local Y to target knee angle offset
-        MIN_KNEE_ANGLE: Math.PI / 6,  // Approx 30 degrees (more bent)
-        MAX_KNEE_ANGLE: Math.PI / 1.5 // Approx 120 degrees (straighter)
+        KNEE_TARGET_BEND_P_GAIN: 4,   // Gain for driving towards target bend state
+        KNEE_MAX_FORCE: 10,            // Max force (can be tuned)
+        FINGER_SIGNAL_LPF_ALPHA: 0.25,
+        FINGER_CONTROL_DEADZONE: 0.15, // How far from 0.5 signal needs to be to activate motor
+        OBSERVED_FINGER_Z_MIN: 0.04,
+        OBSERVED_FINGER_Z_MAX: 0.16,
+        
+        // Define target angles for the knee hinge (relative to thigh)
+        // Positive angle = more bent (as per our kneeGroup.rotateX visual setup in Spider.js)
+        TARGET_KNEE_ANGLE_CURLED: Math.PI / 1.7,  // Approx 105 degrees (very bent)
+        TARGET_KNEE_ANGLE_EXTENDED: Math.PI / 8, // Approx 22.5 degrees (fairly straight but not 0)
     };
 
     /**
@@ -67,7 +84,12 @@ export class SpiderController {
         this.physicsController = physicsController;
         // Initialize filter with appropriate alpha values (pos, rot)
         // Smaller alpha = more smoothing.
-        this.palmCoordsFilter = new CoordsFilter(0.2, 0.3); 
+        this.palmCoordsFilter = new CoordsFilter(0.2, 0.3); // Alpha for palm origin, alpha for palm axes
+
+        // Initialize filters for finger signals (can be one per finger if needed later)
+        // For now, one for the 'Index' finger example.
+        this.fingerSignalFilters['Index'] = new SimpleLowPassFilter(this.legControlConfig.FINGER_SIGNAL_LPF_ALPHA);
+        // TODO: Initialize for other fingers when they are implemented
     }
 
     /**
@@ -121,18 +143,43 @@ export class SpiderController {
      */
     _controlLegWithFinger(handLandmarks, handedness, fingerName, isWorldLandmarks) {
         if (!isWorldLandmarks || !handLandmarks || handLandmarks.length < 21) {
-            this.palmCoordsFilter.reset(); // Reset filter if no valid input
+            this.palmCoordsFilter.reset(); 
+            if (this.fingerSignalFilters[fingerName]) {
+                this.fingerSignalFilters[fingerName].reset(); 
+            }
+            // If we were controlling a leg, unhighlight it as the hand is gone
+            if (this._lastControlledLegIndex !== null) {
+                this.spider.highlightLeg(this._lastControlledLegIndex, false);
+                this._lastControlledLegIndex = null;
+            }
             return;
         }
 
         const rawPalmCoords = calculatePalmCoordinateSystem(handLandmarks, handedness);
         if (!rawPalmCoords) {
             this.palmCoordsFilter.reset();
+            if (this.fingerSignalFilters[fingerName]) {
+                this.fingerSignalFilters[fingerName].reset();
+            }
+            if (this._lastControlledLegIndex !== null) {
+                this.spider.highlightLeg(this._lastControlledLegIndex, false);
+                this._lastControlledLegIndex = null;
+            }
             return;
         }
         
         const palmCoords = this.palmCoordsFilter.apply(rawPalmCoords);
-        if (!palmCoords) return; // Filter might return null if it resets and has no initial value yet
+        if (!palmCoords) { 
+             if (this.fingerSignalFilters[fingerName]) {
+                this.fingerSignalFilters[fingerName].reset();
+            }
+            // Potentially unhighlight if palmCoords become invalid after being valid
+            if (this._lastControlledLegIndex !== null) {
+                this.spider.highlightLeg(this._lastControlledLegIndex, false);
+                this._lastControlledLegIndex = null;
+            }
+            return;
+        }
 
         // Determine which finger tip landmark to use
         let fingerTipLandmarkIndex;
@@ -149,79 +196,93 @@ export class SpiderController {
 
         if (!fingerTipLocal) return;
 
-        // --- Map finger state to target knee angle ---
-        // fingerTipLocal.y: Extension/curl relative to palm's forward direction.
-        // Positive Y is "finger extending away from palm along its surface".
-        // Negative Y is "finger curled towards palm".
-        // We want: extended finger -> straighter leg (larger knee angle), curled finger -> bent leg (smaller knee angle).
-        // A typical HingeConstraint angle might be 0 when segments are aligned, positive when bent one way.
-        // Our visual kneeBend in Spider.js makes a positive rotation around X make it more bent.
-        // Let's define targetAngle such that straighter = larger angle. Max angle for straighter.
+        if (fingerName === 'Index') { // Only log for the finger we're working on
+            // console.log(`IndexFinger Tip Local (Palm Space): X:${fingerTipLocal.x.toFixed(4)}, Y:${fingerTipLocal.y.toFixed(4)}, Z:${fingerTipLocal.z.toFixed(4)}`);
+        }
+
+        // --- Normalize finger state (curl/extension) based on Local Z ---
+        const minZ = this.legControlConfig.OBSERVED_FINGER_Z_MIN;
+        const maxZ = this.legControlConfig.OBSERVED_FINGER_Z_MAX;
         
-        // Normalize fingerTipLocal.y: Let's assume its effective range is roughly -0.05 to 0.1 for MediaPipe world landmarks
-        // This needs calibration based on observed values.
-        const normalizedFingerY = Math.max(-0.05, Math.min(0.1, fingerTipLocal.y)); // Clamp to expected range
-        const fingerControlSignal = (normalizedFingerY + 0.05) / (0.1 + 0.05); // Map to 0 (curled) - 1 (extended)
+        let rawFingerControlSignal = 0.5; // Default to neutral 
+        if (maxZ > minZ) {
+            // fingerTipLocal.z: 0.04 (curled) to 0.16 (extended)
+            // We want signal: 0 (curled) to 1 (extended)
+            const clampedZ = Math.max(minZ, Math.min(maxZ, fingerTipLocal.z));
+            rawFingerControlSignal = (clampedZ - minZ) / (maxZ - minZ); 
+        }
 
-        const targetKneeAngle = this.legControlConfig.MIN_KNEE_ANGLE + 
-                                fingerControlSignal * (this.legControlConfig.MAX_KNEE_ANGLE - this.legControlConfig.MIN_KNEE_ANGLE);
+        // Apply Low-Pass Filter to the finger control signal
+        let fingerControlSignal = rawFingerControlSignal; // Default if no filter
+        if (this.fingerSignalFilters[fingerName]) {
+            fingerControlSignal = this.fingerSignalFilters[fingerName].apply(rawFingerControlSignal);
+        }
 
-        // --- Actuate the corresponding spider leg's knee joint ---
+
+        // --- Actuate the corresponding spider leg\'s knee joint ---
         const spiderLegIndex = this.fingerToLegMap[fingerName];
-        if (spiderLegIndex === undefined || !this.spider.legConstraints) return;
+        if (spiderLegIndex === undefined || !this.spider.legConstraints) {
+            // If we were controlling a leg but this finger mapping is now invalid, unhighlight
+            if (this._lastControlledLegIndex !== null) {
+                this.spider.highlightLeg(this._lastControlledLegIndex, false);
+                this._lastControlledLegIndex = null;
+            }
+            return;
+        }
+
+        // Unhighlight previously controlled leg if different from current
+        if (this._lastControlledLegIndex !== null && this._lastControlledLegIndex !== spiderLegIndex) {
+            this.spider.highlightLeg(this._lastControlledLegIndex, false);
+        }
+        
+        // Highlight the currently controlled leg
+        this.spider.highlightLeg(spiderLegIndex, true);
+        this._lastControlledLegIndex = spiderLegIndex;
+
 
         const kneeConstraintIndex = spiderLegIndex * 2 + 1; // Assuming body-thigh, then thigh-tibia (knee)
-        if (kneeConstraintIndex >= this.spider.legConstraints.length) return;
+        if (kneeConstraintIndex >= this.spider.legConstraints.length) {
+             this.spider.highlightLeg(spiderLegIndex, false); // Can't control, so unhighlight
+             this._lastControlledLegIndex = null;
+            return;
+        }
         
         const kneeHinge = this.spider.legConstraints[kneeConstraintIndex];
 
         if (kneeHinge instanceof CANNON.HingeConstraint) {
-            kneeHinge.enableMotor();
+            kneeHinge.enableMotor(); 
             
-            // Simple P-controller for motor speed to reach target angle
-            // Note: CANNON.HingeConstraint does not directly expose current angle easily.
-            // This is a very simplified actuation. True target angle following needs more.
-            // For now, we'll set a speed proportional to how "extended" the finger is.
-            // More extended finger -> tries to achieve MAX_KNEE_ANGLE (straighter).
-            // More curled finger -> tries to achieve MIN_KNEE_ANGLE (more bent).
+            let motorSpeed = 0;
+            const gain = this.legControlConfig.KNEE_TARGET_BEND_P_GAIN;
+            const deadZone = this.legControlConfig.FINGER_CONTROL_DEADZONE;
 
-            // To drive towards a target angle, the motor speed should be based on the error.
-            // This is a placeholder for a proper PD controller on the joint angle.
-            // A more direct (but potentially jerky) approach if we could get current angle:
-            // let currentAngle = ... ; // How to get this robustly from Hinge?
-            // const error = targetKneeAngle - currentAngle;
-            // kneeHinge.setMotorSpeed(error * this.legControlConfig.KNEE_P_GAIN);
+            // fingerControlSignal: 0 (curled) to 1 (extended)
+            // TARGET_KNEE_ANGLE_CURLED is a large positive bend (e.g., 105 deg)
+            // TARGET_KNEE_ANGLE_EXTENDED is a small positive bend (e.g., 22 deg)
 
-            // Simplified: if fingerControlSignal is high, aim for positive speed (straighten), if low, negative (bend)
-            // This won't hold a position, just drives.
-            let motorSpeed = (fingerControlSignal - 0.5) * 2 * this.legControlConfig.KNEE_P_GAIN; // -P_GAIN to +P_GAIN
-
-            // A Hinge motor drives bodyB relative to bodyA.
-            // If positive rotation means more bent, and targetAngle is "more straight" (larger),
-            // we need to see how this maps.
-            // Let's assume our targetAngle maps directly to the hinge's internal angle state where MAX is straighter.
-            // The hinge motor will attempt to reach a certain angular velocity.
-            // We'll use this simplified motor control for now:
-            // Drive towards MAX_KNEE_ANGLE if finger extended, MIN_KNEE_ANGLE if curled.
-
-            // A simple proportional velocity control to drive towards the target angle
-            // This will oscillate without damping and precise current angle.
-            // For a true PD controller on angle, one would typically apply torques or have a more complex motor model.
-            // CANNON's Hinge motor is more of a velocity motor.
-            // Let's make it simple: if finger is extended, try to straighten; if curled, try to bend.
-            // This won't reach a specific angle but will react.
-            
-            if (fingerControlSignal > 0.6) { // Finger extended
-                kneeHinge.setMotorSpeed(1.0 * this.legControlConfig.KNEE_P_GAIN); // Speed to straighten
-            } else if (fingerControlSignal < 0.4) { // Finger curled
-                kneeHinge.setMotorSpeed(-1.0 * this.legControlConfig.KNEE_P_GAIN); // Speed to bend further
-            } else {
-                kneeHinge.setMotorSpeed(0); // Hold (or attempt to, with damping)
+            // If finger is more towards "extended" (signal > 0.5 + deadzone), try to move towards TARGET_KNEE_ANGLE_EXTENDED
+            // This means *decreasing* the current bend (if it's > TARGET_KNEE_ANGLE_EXTENDED), so negative motor speed.
+            // The more extended the finger, the stronger the push towards the extended target angle.
+            if (fingerControlSignal > 0.5 + deadZone) {
+                // How "extended" is the finger beyond the neutral zone? (0 to 1 range)
+                const extendEffort = (fingerControlSignal - (0.5 + deadZone)) / (1.0 - (0.5 + deadZone));
+                motorSpeed = -extendEffort * gain; // Negative speed to reduce bend angle
+            } 
+            // If finger is more towards "curled" (signal < 0.5 - deadzone), try to move towards TARGET_KNEE_ANGLE_CURLED
+            // This means *increasing* the current bend (if it's < TARGET_KNEE_ANGLE_CURLED), so positive motor speed.
+            else if (fingerControlSignal < 0.5 - deadZone) {
+                // How "curled" is the finger beyond the neutral zone? (0 to 1 range)
+                const curlEffort = ((0.5 - deadZone) - fingerControlSignal) / (0.5 - deadZone);
+                motorSpeed = curlEffort * gain; // Positive speed to increase bend angle
             }
+            // else motorSpeed remains 0 (finger is in the deadzone)
 
+            kneeHinge.setMotorSpeed(motorSpeed);
             kneeHinge.setMotorMaxForce(this.legControlConfig.KNEE_MAX_FORCE);
-            // console.log(`Leg ${spiderLegIndex}, Finger ${fingerName}, LocalY: ${fingerTipLocal.y.toFixed(3)}, Signal: ${fingerControlSignal.toFixed(3)}, TargetAngle: ${targetKneeAngle.toFixed(3)}, MotorSpeed: ${kneeHinge.motorEquation.targetVelocity.toFixed(2)}`);
-
+            
+            if (fingerName === 'Index') { // Log only for the active finger
+                 console.log(`Leg ${spiderLegIndex}, Finger: ${fingerName}, LocalZ: ${fingerTipLocal.z.toFixed(4)}, RawSignal: ${rawFingerControlSignal.toFixed(3)}, SmoothSignal: ${fingerControlSignal.toFixed(3)}, MotorSpeed: ${motorSpeed.toFixed(2)}`);
+            }
         }
     }
 
@@ -232,6 +293,10 @@ export class SpiderController {
      * Cleans up any resources or event listeners if necessary.
      */
     dispose() {
-        // Nothing to dispose of in this basic controller yet.
+        // Unhighlight any leg this controller might have been controlling
+        if (this._lastControlledLegIndex !== null && this.spider) {
+            this.spider.highlightLeg(this._lastControlledLegIndex, false);
+            this._lastControlledLegIndex = null;
+        }
     }
 }

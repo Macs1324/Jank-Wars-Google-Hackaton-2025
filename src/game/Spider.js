@@ -15,6 +15,8 @@ export class Spider {
     legGroups = [];
     /** @type {THREE.MeshPhysicalMaterial} The shared material for the spider. */
     _gummyMaterial;
+    /** @type {THREE.MeshPhysicalMaterial | null} A shared material for highlighting. */
+    _highlightMaterial = null;
 
     /** @type {CANNON.Body | null} The main physics body for the spider. */
     physicsBody = null;
@@ -46,7 +48,17 @@ export class Spider {
      */
     constructor(color, physicsController, initialPosition) {
         this.gameObject = new THREE.Group();
-        this.gameObject.name = "SpiderGameObject"; 
+        this.gameObject.name = "SpiderGameObject";
+
+        // Define a highlight material (e.g., emissive white)
+        this._highlightMaterial = new THREE.MeshPhysicalMaterial({
+            color: 0xffffff,
+            emissive: 0xdddddd, // Make it glow a bit to stand out
+            roughness: 0.5,
+            metalness: 0.0,
+            transparent: false,
+        });
+        
         const actualInitialPosition = initialPosition ? initialPosition.clone() : new THREE.Vector3(0, Spider.INITIAL_BODY_Y, 0);
         this.gameObject.position.copy(actualInitialPosition);
 
@@ -192,7 +204,7 @@ export class Spider {
                 quaternion: new CANNON.Quaternion().copy(thighWorldQuaternion),
                 shape: thighShape,
                 material: physicsController.createDefaultMaterial(),
-                angularDamping: 0.4, linearDamping: 0.4,
+                angularDamping: 0.8, linearDamping: 0.8, // Increased damping
                 collisionFilterGroup: 2, collisionFilterMask: 1 
             });
             this.thighBodies.push(thighCannonBody);
@@ -223,7 +235,7 @@ export class Spider {
                 quaternion: new CANNON.Quaternion().copy(tibiaWorldQuaternion),
                 shape: tibiaShape,
                 material: physicsController.createDefaultMaterial(),
-                angularDamping: 0.4, linearDamping: 0.4,
+                angularDamping: 0.8, linearDamping: 0.8, // Increased damping
                 collisionFilterGroup: 2, collisionFilterMask: 1
             });
             this.tibiaBodies.push(tibiaCannonBody);
@@ -257,5 +269,31 @@ export class Spider {
 
     setVisible(visible) {
         this.gameObject.visible = visible;
+    }
+
+    /**
+     * Highlights or unhighlights a specific leg.
+     * @param {number} legIndex The index of the leg to modify (0 to LEG_COUNT - 1).
+     * @param {boolean} highlighted True to highlight, false to revert to original material.
+     */
+    highlightLeg(legIndex, highlighted) {
+        if (legIndex < 0 || legIndex >= this.legGroups.length) {
+            // console.warn(`Spider.highlightLeg: Invalid legIndex ${legIndex}`);
+            return;
+        }
+
+        const legGroup = this.legGroups[legIndex];
+        const thighMesh = legGroup.getObjectByName(`thigh_${legIndex}`);
+        const kneeGroup = legGroup.getObjectByName(`knee_group_${legIndex}`);
+        const tibiaMesh = kneeGroup ? kneeGroup.getObjectByName(`tibia_${legIndex}`) : null;
+
+        const materialToApply = highlighted ? this._highlightMaterial : this._gummyMaterial;
+
+        if (thighMesh && thighMesh.isMesh) {
+            thighMesh.material = materialToApply;
+        }
+        if (tibiaMesh && tibiaMesh.isMesh) {
+            tibiaMesh.material = materialToApply;
+        }
     }
 }
