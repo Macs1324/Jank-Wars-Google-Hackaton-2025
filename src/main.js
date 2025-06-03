@@ -5,6 +5,7 @@ import { HandTrackingController } from './core/HandTrackingController.js';
 import { HandDebugRenderer } from './utils/HandDebugRenderer.js';
 import { Spider } from './game/Spider.js';
 import { PhysicsController } from './core/PhysicsController.js';
+import { GameLoop } from './game/GameLoop.js';
 import cannonDebugger from 'cannon-es-debugger';
 import { HandDataProcessor } from './utils/HandDataProcessor.js';
 
@@ -36,6 +37,8 @@ class Game {
     player1Spider = null;
     /** @type {Spider | null} */
     player2Spider = null;
+    /** @type {GameLoop | null} */
+    gameLoop = null;
 
     /** @type {number} */
     lastFrameTime = 0;
@@ -53,22 +56,27 @@ class Game {
 
         this.setupScene(); // Spiders will be created here, need physicsController available
 
+        // Initialize GameLoop after scene setup
+        this.gameLoop = new GameLoop(this.scene, this.physicsController);
+        this.gameLoop.setSpiders(this.player1Spider, this.player2Spider);
+        this.debugDisplay.append('Game loop initialized.');
+
         // Initialize physics debugger
-        if (this.scene && this.physicsController) {
-            this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
-                // options...
-                color: 0xff0000, // Default color for shapes
-                scale: 1, // Scale of the debug meshes
-                onInit: (body, mesh, shape) => {
-                    // You can customize the mesh here if needed
-                    // For example, make constraints invisible by default
-                    if (mesh.isLineSegments) { // Constraints are often LineSegments
-                        // mesh.visible = false;
-                    }
-                },
-            });
-            this.debugDisplay.append('Physics debugger initialized.');
-        }
+        // if (this.scene && this.physicsController) {
+        //     this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
+        //         // options...
+        //         color: 0xff0000, // Default color for shapes
+        //         scale: 1, // Scale of the debug meshes
+        //         onInit: (body, mesh, shape) => {
+        //             // You can customize the mesh here if needed
+        //             // For example, make constraints invisible by default
+        //             if (mesh.isLineSegments) { // Constraints are often LineSegments
+        //                 // mesh.visible = false;
+        //             }
+        //         },
+        //     });
+        //     this.debugDisplay.append('Physics debugger initialized.');
+        // }
         this.debugDisplay.append('Scene initialized.');
 
         this.webcamController = new WebcamController('webcam-feed');
@@ -124,19 +132,10 @@ class Game {
         directionalLight.shadow.camera.bottom = -10;
         this.scene.add(directionalLight);
 
-        // Ground plane (Visual)
-        const groundGeometry = new THREE.BoxGeometry(20, 0.1, 20);
-        const groundMaterial = new THREE.MeshStandardMaterial({
-            color: 0x98FB98, // PaleGreen
-            roughness: 0.9,
-            metalness: 0.0,
-        });
-        const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
-        // No rotation needed for box, positioned at y=0
-        groundMesh.receiveShadow = true;
-        this.scene.add(groundMesh);
+        // Note: Ground plane is now handled by GameLoop with the platform
+        // No need to create a separate ground plane here
 
-        // Create Spiders
+        // Create Spiders at initial positions (they will be repositioned by GameLoop)
         const initialFallHeightOffset = 0.6;
         const spiderBaseY = Spider.INITIAL_BODY_Y;
 
@@ -209,9 +208,11 @@ class Game {
             this.physicsController.update(deltaTime);
         }
 
-        if (this.physicsDebugger) {
-            this.physicsDebugger.update();
-        }
+        // if (this.physicsDebugger) {
+        //     this.physicsDebugger.update();
+        // }
+
+        let processedHandData = null;
 
         if (this.handTrackingController && this.handTrackingController.isInitialized &&
             this.webcamController && this.webcamController.isStarted) {
@@ -224,7 +225,7 @@ class Game {
 
             // Process hand tracking data and update spiders
             if (results) {
-                const processedHandData = HandDataProcessor.processHandResults(results);
+                processedHandData = HandDataProcessor.processHandResults(results);
 
                 // Update spider 1 (Red) with left hand data
                 if (this.player1Spider && processedHandData.leftHand) {
@@ -241,6 +242,12 @@ class Game {
                 this.handDebugRenderer.clear();
             }
         }
+
+        // Update game loop with processed hand data
+        if (this.gameLoop) {
+            this.gameLoop.update(deltaTime, processedHandData);
+        }
+
         this.renderer.render(this.scene, this.camera);
     }
 
@@ -258,6 +265,9 @@ class Game {
         }
         if (this.handTrackingController) {
             this.handTrackingController.dispose().catch(err => console.error("Error disposing hand tracker:", err));
+        }
+        if (this.gameLoop) {
+            this.gameLoop.dispose();
         }
         // Future: Dispose Three.js resources, physics resources if necessary
     }

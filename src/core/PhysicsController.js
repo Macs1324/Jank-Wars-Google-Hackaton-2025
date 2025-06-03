@@ -45,35 +45,19 @@ export class PhysicsController {
         this.world.solver.iterations = 15; // Increased for better constraint solving
         // this.world.allowSleep = true; // Allows bodies to "sleep" when not moving, improving performance
 
-        this._createGroundPlane();
+        this._createMaterials(); // Create materials but not the ground plane
         console.log("PhysicsController: Cannon-ES world initialized.");
     }
 
     /**
-     * Creates a static ground box in the physics world.
+     * Creates materials for physics interactions.
+     * The actual ground/platform is now created by GameLoop.
      * @private
      */
-    _createGroundPlane() {
-        const groundShape = new CANNON.Box(new CANNON.Vec3(10, 0.05, 10)); // 20x0.1x20 box (half extents)
-        
+    _createMaterials() {
         // Create ground material with high friction
         const groundMaterial = new CANNON.Material("groundMaterial");
         
-        // Define collision groups
-        const GROUP1_GROUND = 1;
-
-        const groundBody = new CANNON.Body({
-            mass: 0, // Mass 0 makes it static
-            shape: groundShape,
-            material: groundMaterial,
-            collisionFilterGroup: GROUP1_GROUND,
-            collisionFilterMask: -1 // Collide with everything by default
-        });
-        // Position the box at y=0 (center at 0, extends -0.05 to +0.05)
-        groundBody.position.set(0, 0, 0);
-        this.world.addBody(groundBody);
-        console.log("PhysicsController: Static ground box created at y=0 in collision group 1.");
-
         // Create leg material for spider legs
         const legMaterial = new CANNON.Material("legMaterial");
         
@@ -93,9 +77,11 @@ export class PhysicsController {
             restitution: 0.2
         });
         
-        // Store materials for use by spider legs
+        // Store materials for use by spider legs and platform
         this.groundMaterial = groundMaterial;
         this.legMaterial = legMaterial;
+        
+        console.log("PhysicsController: Materials created. Platform will be created by GameLoop.");
     }
 
     /**
