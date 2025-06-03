@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { IKSolver } from '../utils/IKSolver.js';
 
 /**
  * @fileoverview Defines the Spider class for the game.
  * Spiders are the player-controlled characters with a \"lucid gummy\" appearance.
+ * Uses IK-based leg control for precise finger-to-leg mapping.
  */
 
 export class Spider {
@@ -18,12 +20,14 @@ export class Spider {
 
     /** @type {CANNON.Body | null} The main physics body for the spider. */
     physicsBody = null;
-    /** @type {CANNON.Body[]} Physics bodies for the thigh segments. */
-    thighBodies = [];
-    /** @type {CANNON.Body[]} Physics bodies for the tibia segments. */
-    tibiaBodies = [];
-    /** @type {CANNON.Constraint[]} Constraints used for the legs. */
-    legConstraints = [];
+    /** @type {CANNON.Body[]} Kinematic physics bodies for foot collisions. */
+    footBodies = [];
+
+    // IK Control State
+    /** @type {THREE.Vector3[]} Target positions for each foot in leg-local space */
+    footTargets = [];
+    /** @type {number[]} Current finger curl values (0-1) for each leg */
+    fingerCurls = [];
 
     // --- Constants ---
     static LEG_COUNT = 5;
@@ -36,7 +40,7 @@ export class Spider {
     static TIBIA_LENGTH = 0.28;
 
     // Target Y position for the center of the spider's body
-    static INITIAL_BODY_Y = 0.33; // Adjusted to prevent visual sinking with body-only physics
+    static INITIAL_BODY_Y = 0.33;
 
     /**
      * Creates a new Spider instance.
@@ -62,10 +66,14 @@ export class Spider {
             side: THREE.FrontSide,
         });
 
+        // Initialize IK control state
+        this.fingerCurls = new Array(Spider.LEG_COUNT).fill(0);
+        this.footTargets = [];
+
         this._createBody(); // Create visual body
         this._createLegs(); // Create visual legs
 
-        // Create main physics body
+        // Create main physics body (dynamic)
         if (physicsController) {
             const bodyShape = new CANNON.Sphere(Spider.BODY_RADIUS);
             this.physicsBody = new CANNON.Body({
@@ -75,8 +83,8 @@ export class Spider {
                 material: physicsController.createDefaultMaterial(),
                 angularDamping: 0.5,
             });
-            this.physicsBody.quaternion.copy(this.gameObject.quaternion); // Match initial visual orientation
-            physicsController.addBody(this.bodyMesh, this.physicsBody); // Link visual bodyMesh to physicsBody
+            this.physicsBody.quaternion.copy(this.gameObject.quaternion);
+            physicsController.addBody(this.bodyMesh, this.physicsBody);
         }
         
         // Make all visual meshes cast shadows
@@ -95,7 +103,7 @@ export class Spider {
         this.gameObject.add(this.bodyMesh);
     }
 
-    _createLegs() { // Creates the visual structure of the legs
+    _createLegs() {
         const thighGeometry = new THREE.CapsuleGeometry(Spider.THIGH_RADIUS, Spider.THIGH_LENGTH, 6, 10);
         const tibiaGeometry = new THREE.CapsuleGeometry(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH, 6, 10);
 
@@ -108,52 +116,52 @@ export class Spider {
         ];
 
         const thighUpwardTilt = Math.PI / 20; // ~9 degrees upward from horizontal
-        const kneeBend = Math.PI / 1.75;      // ~102.8 degrees bend at the knee
 
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
-            const legGroup = new THREE.Group(); // Controls overall thigh orientation and base position
+            const legGroup = new THREE.Group();
             legGroup.name = `leg_group_${i}`;
+            legGroup.userData.legIndex = i; // Store for IK solver
 
             const angle = legAttachmentAngles[i];
             const attachX = Spider.BODY_RADIUS * Math.sin(angle);
             const attachZ = Spider.BODY_RADIUS * Math.cos(angle);
-            legGroup.position.set(attachX, 0, attachZ); // Position on body equator
+            legGroup.position.set(attachX, 0, attachZ);
 
-            // Orient legGroup: local Y-axis (thigh direction) points radially out, then tilts up
-            legGroup.lookAt(this.bodyMesh.position); // -Z towards body center
-            legGroup.rotateY(Math.PI);               // +Z radially outward
-            legGroup.rotateX(Math.PI / 2);           // +Y radially outward (was +Z)
-            legGroup.rotateZ(thighUpwardTilt);       // Tilt +Y (thigh) upwards around local Z
+            // Orient legGroup: local Y-axis points radially out, then tilts up
+            legGroup.lookAt(this.bodyMesh.position);
+            legGroup.rotateY(Math.PI);
+            legGroup.rotateX(Math.PI / 2);
+            legGroup.rotateZ(thighUpwardTilt);
 
-            this.gameObject.add(legGroup); // Add to main spider assembly
+            this.gameObject.add(legGroup);
 
             // Thigh Mesh
             const thighMesh = new THREE.Mesh(thighGeometry, this._gummyMaterial);
             thighMesh.name = `thigh_${i}`;
-            thighMesh.position.y = Spider.THIGH_LENGTH / 2 + Spider.THIGH_RADIUS; // Along legGroup's local Y
+            thighMesh.position.y = Spider.THIGH_LENGTH / 2 + Spider.THIGH_RADIUS;
             legGroup.add(thighMesh);
 
             // Knee Group (controls tibia orientation relative to thigh)
             const kneeGroup = new THREE.Group();
             kneeGroup.name = `knee_group_${i}`;
-            kneeGroup.position.y = Spider.THIGH_LENGTH + Spider.THIGH_RADIUS; // At tip of thigh
+            kneeGroup.position.y = Spider.THIGH_LENGTH + Spider.THIGH_RADIUS;
             legGroup.add(kneeGroup);
 
             // Tibia Mesh
             const tibiaMesh = new THREE.Mesh(tibiaGeometry, this._gummyMaterial);
             tibiaMesh.name = `tibia_${i}`;
-            tibiaMesh.position.y = Spider.TIBIA_LENGTH / 2 + Spider.TIBIA_RADIUS; // Along kneeGroup's local Y
+            tibiaMesh.position.y = Spider.TIBIA_LENGTH / 2 + Spider.TIBIA_RADIUS;
             kneeGroup.add(tibiaMesh);
-            
-            kneeGroup.rotateX(kneeBend); // Apply knee bend
 
-            this.legGroups.push(legGroup); // Store for physics initialization
+            this.legGroups.push(legGroup);
+            
+            // Initialize foot target for this leg
+            this.footTargets.push(IKSolver.fingerCurlToFootTarget(0, i, Spider.THIGH_LENGTH, Spider.TIBIA_LENGTH));
         }
     }
 
     /**
-     * Initializes the physics bodies and constraints for the spider's legs.
-     * Call this *after* the spider's gameObject is in the scene and matrices are updated.
+     * Initializes kinematic foot colliders for ground interaction.
      * @param {import('../core/PhysicsController.js').PhysicsController} physicsController
      */
     initializeLegPhysics(physicsController) {
@@ -162,93 +170,142 @@ export class Spider {
             return;
         }
 
-        this.thighBodies = []; // Clear any previous (e.g. from multiple calls)
-        this.tibiaBodies = [];
-        this.legConstraints = [];
+        this.footBodies = [];
 
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
-            const legGroup = this.legGroups[i];
-            const thighMesh = legGroup.getObjectByName(`thigh_${i}`);
-            const kneeGroup = legGroup.getObjectByName(`knee_group_${i}`);
-            const tibiaMesh = kneeGroup ? kneeGroup.getObjectByName(`tibia_${i}`) : null;
+            // Create small sphere colliders for feet
+            const footShape = new CANNON.Sphere(Spider.TIBIA_RADIUS * 1.5);
+            const footBody = new CANNON.Body({
+                mass: 0, // Kinematic body
+                shape: footShape,
+                material: physicsController.createDefaultMaterial(),
+                type: CANNON.Body.KINEMATIC,
+                collisionFilterGroup: 4, // Foot collision group
+                collisionFilterMask: 1,  // Collide with ground
+            });
 
-            if (!thighMesh || !kneeGroup || !tibiaMesh) {
-                console.error(`Spider: Could not find all visual leg parts for leg ${i} for physics. Thigh: ${!!thighMesh}, KneeGroup: ${!!kneeGroup}, Tibia: ${!!tibiaMesh}`);
-                continue;
+            this.footBodies.push(footBody);
+            physicsController.world.addBody(footBody);
+        }
+
+        console.log("Spider: Initialized kinematic foot colliders.");
+    }
+
+    /**
+     * Update spider based on hand tracking data.
+     * @param {Object} handData - Hand tracking data with finger positions
+     */
+    update(handData) {
+        if (!handData) return;
+
+        // Extract finger curl values from hand data
+        if (handData.fingerCurls && handData.fingerCurls.length >= Spider.LEG_COUNT) {
+            for (let i = 0; i < Spider.LEG_COUNT; i++) {
+                this.fingerCurls[i] = handData.fingerCurls[i];
+                
+                // Update foot target based on finger curl
+                this.footTargets[i] = IKSolver.fingerCurlToFootTarget(
+                    this.fingerCurls[i], 
+                    i, 
+                    Spider.THIGH_LENGTH, 
+                    Spider.TIBIA_LENGTH
+                );
             }
+            
+            // Debug: Log finger curls for first spider only
+            if (this.gameObject.position.x < 0) { // Left spider (red)
+                console.log('Finger curls:', handData.fingerCurls.map(c => c.toFixed(2)).join(', '));
+            }
+        }
 
-            // --- Thigh Physics ---
-            const thighHalfExtents = new CANNON.Vec3(Spider.THIGH_RADIUS, Spider.THIGH_LENGTH / 2, Spider.THIGH_RADIUS);
-            const thighShape = new CANNON.Box(thighHalfExtents);
+        // Apply IK to all legs
+        this._updateLegIK();
+        
+        // Update foot collider positions (disabled for debugging)
+        this._updateFootColliders();
+        
+        // Apply ground reaction forces (disabled for debugging)
+        this._applyGroundForces();
+    }
 
-            const thighWorldPosition = new THREE.Vector3();
-            thighMesh.getWorldPosition(thighWorldPosition);
-            const thighWorldQuaternion = new THREE.Quaternion();
-            thighMesh.getWorldQuaternion(thighWorldQuaternion);
+    /**
+     * Apply IK calculations to update leg visual positions.
+     * @private
+     */
+    _updateLegIK() {
+        for (let i = 0; i < Spider.LEG_COUNT; i++) {
+            const legGroup = this.legGroups[i];
+            const target = this.footTargets[i];
 
-            const thighCannonBody = new CANNON.Body({
-                mass: 0.1,
-                position: new CANNON.Vec3().copy(thighWorldPosition),
-                quaternion: new CANNON.Quaternion().copy(thighWorldQuaternion),
-                shape: thighShape,
-                material: physicsController.createDefaultMaterial(),
-                angularDamping: 0.4, linearDamping: 0.4,
-                collisionFilterGroup: 2, collisionFilterMask: 1 
-            });
-            this.thighBodies.push(thighCannonBody);
-            physicsController.addBody(thighMesh, thighCannonBody);
-
-            const pivotOnBody = new CANNON.Vec3().copy(legGroup.position); // In body's local space
-            const bodyToThighPivotOnThigh = new CANNON.Vec3(0, -Spider.THIGH_LENGTH / 2, 0); // Thigh's local base
-
-            const bodyToThighConstraint = new CANNON.PointToPointConstraint(
-                this.physicsBody, pivotOnBody,
-                thighCannonBody, bodyToThighPivotOnThigh
+            // Solve IK for this leg
+            const ikSolution = IKSolver.solve2BoneIK(
+                target,
+                Spider.THIGH_LENGTH,
+                Spider.TIBIA_LENGTH,
+                false // Don't flip elbow direction
             );
-            physicsController.world.addConstraint(bodyToThighConstraint);
-            this.legConstraints.push(bodyToThighConstraint);
 
-            // --- Tibia Physics ---
-            const tibiaHalfExtents = new CANNON.Vec3(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH / 2, Spider.TIBIA_RADIUS);
-            const tibiaShape = new CANNON.Box(tibiaHalfExtents);
-
-            const tibiaWorldPosition = new THREE.Vector3();
-            tibiaMesh.getWorldPosition(tibiaWorldPosition);
-            const tibiaWorldQuaternion = new THREE.Quaternion();
-            tibiaMesh.getWorldQuaternion(tibiaWorldQuaternion);
-
-            const tibiaCannonBody = new CANNON.Body({
-                mass: 0.08,
-                position: new CANNON.Vec3().copy(tibiaWorldPosition),
-                quaternion: new CANNON.Quaternion().copy(tibiaWorldQuaternion),
-                shape: tibiaShape,
-                material: physicsController.createDefaultMaterial(),
-                angularDamping: 0.4, linearDamping: 0.4,
-                collisionFilterGroup: 2, collisionFilterMask: 1
-            });
-            this.tibiaBodies.push(tibiaCannonBody);
-            physicsController.addBody(tibiaMesh, tibiaCannonBody);
-
-            const thighToTibiaPivotOnThigh = new CANNON.Vec3(0, Spider.THIGH_LENGTH / 2, 0); // Thigh's local tip
-            const thighToTibiaPivotOnTibia = new CANNON.Vec3(0, -Spider.TIBIA_LENGTH / 2, 0); // Tibia's local base
-            const hingeAxisLocal = new CANNON.Vec3(1, 0, 0); // Hinge around local X
-
-            const kneeConstraint = new CANNON.HingeConstraint(
-                thighCannonBody, tibiaCannonBody,
-                {
-                    pivotA: thighToTibiaPivotOnThigh, pivotB: thighToTibiaPivotOnTibia,
-                    axisA: hingeAxisLocal.clone(), axisB: hingeAxisLocal.clone(),
-                }
-            );
-            physicsController.world.addConstraint(kneeConstraint);
-            this.legConstraints.push(kneeConstraint);
+            // Apply the solution to the visual leg
+            IKSolver.applyIKToLeg(legGroup, ikSolution.thighAngle, ikSolution.tibiaAngle);
         }
     }
 
-    update(handData) {
-        // TODO: Implement spider control logic based on handData
-        // This will involve applying forces/torques to physicsBody, thighBodies, tibiaBodies
-        // or setting target positions/rotations for constraints.
+    /**
+     * Update kinematic foot collider positions to match visual feet.
+     * @private
+     */
+    _updateFootColliders() {
+        if (!this.footBodies || this.footBodies.length === 0) return;
+
+        // TEMPORARILY DISABLED for debugging
+        return;
+
+        for (let i = 0; i < Spider.LEG_COUNT; i++) {
+            const footBody = this.footBodies[i];
+            const legGroup = this.legGroups[i];
+
+            if (footBody && legGroup) {
+                // Calculate foot world position
+                const footWorldPos = IKSolver.getFootWorldPosition(
+                    legGroup, 
+                    Spider.THIGH_LENGTH, 
+                    Spider.TIBIA_LENGTH
+                );
+
+                // Update kinematic body position
+                footBody.position.copy(footWorldPos);
+            }
+        }
+    }
+
+    /**
+     * Apply ground reaction forces to the main body when feet contact ground.
+     * @private
+     */
+    _applyGroundForces() {
+        if (!this.physicsBody || !this.footBodies) return;
+
+        // TEMPORARILY DISABLED for debugging
+        return;
+
+        // Check each foot for ground contact and apply reaction forces
+        for (let i = 0; i < this.footBodies.length; i++) {
+            const footBody = this.footBodies[i];
+            
+            // Simple ground contact check (Y position near ground level)
+            if (footBody.position.y <= 0.1) {
+                // Calculate force based on finger pressure and body weight
+                const fingerPressure = 1 - this.fingerCurls[i]; // More pressure when extended
+                const forceDirection = new CANNON.Vec3(0, 1, 0); // Upward force
+                const forceMagnitude = fingerPressure * 15; // Adjust for desired responsiveness
+
+                // Apply force from foot position to body
+                const footToBody = new CANNON.Vec3().copy(this.physicsBody.position).vsub(footBody.position);
+                const forcePosition = footBody.position;
+
+                this.physicsBody.applyForce(forceDirection.scale(forceMagnitude), forcePosition);
+            }
+        }
     }
 
     getObject3D() {

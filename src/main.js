@@ -6,6 +6,7 @@ import { HandDebugRenderer } from './utils/HandDebugRenderer.js';
 import { Spider } from './game/Spider.js';
 import { PhysicsController } from './core/PhysicsController.js';
 import cannonDebugger from 'cannon-es-debugger';
+import { HandDataProcessor } from './utils/HandDataProcessor.js';
 
 /**
  * @fileoverview Main entry point for the Jank Wars game.
@@ -226,7 +227,20 @@ class Game {
                 this.handDebugRenderer.drawHands(results);
             }
 
-            // TODO: Pass hand data to spiders for updates & physics interactions
+            // Process hand tracking data and update spiders
+            if (results) {
+                const processedHandData = HandDataProcessor.processHandResults(results);
+                
+                // Update spider 1 (Red) with left hand data
+                if (this.player1Spider && processedHandData.leftHand) {
+                    this.player1Spider.update(processedHandData.leftHand);
+                }
+                
+                // Update spider 2 (Blue) with right hand data
+                if (this.player2Spider && processedHandData.rightHand) {
+                    this.player2Spider.update(processedHandData.rightHand);
+                }
+            }
         } else {
             if (this.handDebugRenderer) {
                 this.handDebugRenderer.clear();
