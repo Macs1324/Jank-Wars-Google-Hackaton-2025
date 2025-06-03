@@ -17,46 +17,63 @@ export class IKSolver {
      * @returns {{thighAngle: number, tibiaAngle: number, reachable: boolean}}
      */
     static solve2BoneIK(target, thighLength, tibiaLength, flip = false) {
-        const targetDistance = target.length();
+        // In our leg coordinate system:
+        // X = side-to-side (minimal for now)
+        // Y = outward from body (main extension)
+        // Z = up/down (height)
+        
+        // Calculate distance in the Y-Z plane (primary leg movement plane)
+        const targetDistanceYZ = Math.sqrt(target.y * target.y + target.z * target.z);
         const maxReach = thighLength + tibiaLength;
         const minReach = Math.abs(thighLength - tibiaLength);
         
+        // Add small epsilon to avoid edge cases
+        const epsilon = 0.001;
+        
         // Check if target is reachable
-        if (targetDistance > maxReach || targetDistance < minReach) {
-            // Target is unreachable - return extended or retracted pose
-            if (targetDistance > maxReach) {
-                // Extend towards target
-                const targetDirection = target.clone().normalize();
-                return {
-                    thighAngle: Math.atan2(targetDirection.x, targetDirection.y),
-                    tibiaAngle: 0, // Straight extension
-                    reachable: false
-                };
-            } else {
-                // Target too close - retract
-                return {
-                    thighAngle: 0,
-                    tibiaAngle: Math.PI, // Fully bent
-                    reachable: false
-                };
-            }
+        if (targetDistanceYZ > maxReach - epsilon) {
+            // Target is at or beyond max reach - extend towards target
+            const angleToTarget = Math.atan2(target.z, target.y);
+            return {
+                thighAngle: angleToTarget,
+                tibiaAngle: 0, // Straight extension
+                reachable: false
+            };
+        } else if (targetDistanceYZ < minReach + epsilon) {
+            // Target too close - retract
+            return {
+                thighAngle: 0,
+                tibiaAngle: Math.PI * 0.6, // Bend knee up
+                reachable: false
+            };
         }
         
         // Use law of cosines to find angles
-        // Calculate tibia angle first (angle at the "elbow"/knee)
-        const cosC = (thighLength * thighLength + tibiaLength * tibiaLength - targetDistance * targetDistance) / 
-                     (2 * thighLength * tibiaLength);
-        const tibiaAngle = Math.acos(Math.max(-1, Math.min(1, cosC)));
+        // Calculate knee angle (tibia relative to thigh)
+        const cosKnee = (thighLength * thighLength + tibiaLength * tibiaLength - targetDistanceYZ * targetDistanceYZ) / 
+                        (2 * thighLength * tibiaLength);
         
-        // Calculate thigh angle
-        const cosA = (thighLength * thighLength + targetDistance * targetDistance - tibiaLength * tibiaLength) / 
-                     (2 * thighLength * targetDistance);
-        const angleToTarget = Math.atan2(target.x, target.y);
-        const thighAngle = angleToTarget - Math.acos(Math.max(-1, Math.min(1, cosA))) * (flip ? -1 : 1);
+        // Clamp to valid range and calculate knee angle
+        const clampedCosKnee = Math.max(-1 + epsilon, Math.min(1 - epsilon, cosKnee));
+        const kneeAngle = Math.acos(clampedCosKnee);
+        
+        // Calculate thigh angle (thigh relative to leg base)
+        const cosThigh = (thighLength * thighLength + targetDistanceYZ * targetDistanceYZ - tibiaLength * tibiaLength) / 
+                         (2 * thighLength * targetDistanceYZ);
+        
+        // Clamp to valid range
+        const clampedCosThigh = Math.max(-1 + epsilon, Math.min(1 - epsilon, cosThigh));
+        const thighToTargetAngle = Math.acos(clampedCosThigh);
+        
+        const angleToTarget = Math.atan2(target.z, target.y);
+        const thighAngle = angleToTarget - thighToTargetAngle;
+        
+        // Convert knee angle to our convention (exterior angle)
+        const tibiaAngle = Math.PI - kneeAngle;
         
         return {
             thighAngle: thighAngle,
-            tibiaAngle: flip ? -tibiaAngle : tibiaAngle,
+            tibiaAngle: tibiaAngle,
             reachable: true
         };
     }
@@ -72,18 +89,31 @@ export class IKSolver {
      * @returns {THREE.Vector3} Target position in leg's local space
      */
     static fingerCurlToFootTarget(fingerCurl, legIndex, thighLength, tibiaLength) {
-        // Simplified mapping - just control height based on finger curl
         const maxReach = thighLength + tibiaLength;
         
-        // When finger is extended (curl = 0), foot goes down to ground level
-        // When finger is curled (curl = 1), foot lifts up
-        const baseHeight = -maxReach * 0.6; // Slightly bent resting position
-        const liftHeight = maxReach * 0.2;   // How high to lift when curled
+        // Spider-like leg behavior:
+        // - Extended finger (curl=0): Leg stretches ALL THE WAY out radially and down to ground
+        // - Curled finger (curl=1): Leg pulls back toward body and lifts up (knee bends upward)
         
-        const height = THREE.MathUtils.lerp(baseHeight, liftHeight, fingerCurl);
+        // In leg coordinate system:
+        // Y-axis = radial direction outward from body center
+        // Z-axis = vertical (up/down)
+        // X-axis = tangential (side-to-side, minimal for now)
         
-        // Keep X and Z simple for now - just point straight outward
-        return new THREE.Vector3(0, height, maxReach * 0.7);
+        // Radial extension (Y-axis): how far out from body center
+        const maxRadialExtension = maxReach * 0.95; // Nearly full extension when finger is extended
+        const minRadialExtension = maxReach * 0.3;  // Pull close to body when finger is curled
+        const yTarget = THREE.MathUtils.lerp(maxRadialExtension, minRadialExtension, fingerCurl);
+        
+        // Vertical position (Z-axis): height relative to leg attachment point
+        const groundLevel = -maxReach * 0.5;    // Down toward ground when extended
+        const liftedHeight = maxReach * 0.3;    // Lift up when curled (spider knee behavior)
+        const zTarget = THREE.MathUtils.lerp(groundLevel, liftedHeight, fingerCurl);
+        
+        // Side-to-side (X-axis): minimal for now, could add knuckle control later
+        const xTarget = 0;
+        
+        return new THREE.Vector3(xTarget, yTarget, zTarget);
     }
     
     /**
@@ -99,20 +129,22 @@ export class IKSolver {
         const kneeGroup = legGroup.getObjectByName(`knee_group_${legIndex}`);
         
         if (kneeGroup) {
-            // Store the base orientation (the initial setup rotation)
-            // The leg is already oriented radially and tilted - we want to modify from there
+            // Store the original base rotation that was set up in _createLegs()
+            const baseUpwardTilt = Math.PI / 20; // Base upward tilt from _createLegs()
             
-            // Get the initial tilt that was applied during leg creation
-            const initialUpwardTilt = Math.PI / 20; // This matches _createLegs()
+            // Apply thigh angle as rotation around the leg's local X-axis
+            // This controls movement in the Y-Z plane (radial-vertical plane)
+            // After the leg setup transforms, X-axis rotation controls up/down tilt
+            legGroup.rotation.x = baseUpwardTilt + thighAngle;
             
-            // Apply thigh angle as additional rotation around the local Z-axis
-            // This will bend the leg up/down relative to its radial orientation
-            legGroup.rotation.z = initialUpwardTilt + thighAngle * 0.5; // Scale down for more reasonable movement
+            // Apply tibia angle as rotation around the knee's local X-axis  
+            // This controls knee bending - positive angles bend knee "up"
+            kneeGroup.rotation.x = tibiaAngle;
             
-            // Apply tibia angle - this controls knee bending
-            // Start from the default knee bend and modify it
-            const defaultKneeBend = Math.PI / 1.75;
-            kneeGroup.rotation.x = defaultKneeBend + tibiaAngle * 0.5; // Scale down for more reasonable movement
+            // Debug: Log the angles being applied for first leg
+            if (legIndex === 0 && Math.random() < 0.1) {
+                console.log(`Applying angles: thigh=${thighAngle.toFixed(3)} (total X=${legGroup.rotation.x.toFixed(3)}), tibia=${tibiaAngle.toFixed(3)}`);
+            }
         }
     }
     
@@ -128,18 +160,42 @@ export class IKSolver {
         // Find the tibia mesh to get its world matrix
         const legIndex = legGroup.userData.legIndex || 0;
         const kneeGroup = legGroup.getObjectByName(`knee_group_${legIndex}`);
-        if (!kneeGroup) return new THREE.Vector3();
+        if (!kneeGroup) {
+            console.warn(`Could not find knee_group_${legIndex}`);
+            return new THREE.Vector3();
+        }
         
         const tibiaMesh = kneeGroup.getObjectByName(`tibia_${legIndex}`);
-        if (!tibiaMesh) return new THREE.Vector3();
+        if (!tibiaMesh) {
+            console.warn(`Could not find tibia_${legIndex}`);
+            return new THREE.Vector3();
+        }
         
         // Update matrices to ensure accurate world position calculation
         legGroup.updateMatrixWorld(true);
         
-        // Calculate foot position at the end of the tibia
-        const footLocalPosition = new THREE.Vector3(0, tibiaLength / 2 + 0.03, 0); // Add tibia radius
-        const footWorldPosition = new THREE.Vector3();
-        footLocalPosition.applyMatrix4(tibiaMesh.matrixWorld);
+        // Calculate foot position by walking through the kinematic chain
+        // Start at leg attachment point (legGroup position)
+        const legAttachPoint = new THREE.Vector3();
+        legGroup.getWorldPosition(legAttachPoint);
+        
+        // Get thigh end position (knee position)
+        const kneeWorldPos = new THREE.Vector3();
+        kneeGroup.getWorldPosition(kneeWorldPos);
+        
+        // Calculate foot position at the end of tibia
+        // The tibia extends in its local Y direction from the knee
+        const tibiaDirection = new THREE.Vector3(0, 1, 0); // Local Y direction
+        tibiaDirection.applyQuaternion(tibiaMesh.getWorldQuaternion(new THREE.Quaternion()));
+        
+        // Foot is at knee position + tibia length in tibia direction
+        const footWorldPosition = kneeWorldPos.clone();
+        footWorldPosition.add(tibiaDirection.multiplyScalar(tibiaLength));
+        
+        // Debug: Log foot position calculation for first leg
+        if (legIndex === 0 && Math.random() < 0.1) {
+            console.log(`Foot calc: attach=(${legAttachPoint.x.toFixed(3)}, ${legAttachPoint.y.toFixed(3)}, ${legAttachPoint.z.toFixed(3)}), knee=(${kneeWorldPos.x.toFixed(3)}, ${kneeWorldPos.y.toFixed(3)}, ${kneeWorldPos.z.toFixed(3)}), foot=(${footWorldPosition.x.toFixed(3)}, ${footWorldPosition.y.toFixed(3)}, ${footWorldPosition.z.toFixed(3)})`);
+        }
         
         return footWorldPosition;
     }

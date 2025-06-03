@@ -29,6 +29,10 @@ export class Spider {
     /** @type {number[]} Current finger curl values (0-1) for each leg */
     fingerCurls = [];
 
+    // Debug objects
+    debugFootTargets = [];
+    debugFootPositions = [];
+
     // --- Constants ---
     static LEG_COUNT = 5;
     static BODY_RADIUS = 0.20;
@@ -69,9 +73,14 @@ export class Spider {
         // Initialize IK control state
         this.fingerCurls = new Array(Spider.LEG_COUNT).fill(0);
         this.footTargets = [];
+        
+        // Debug objects
+        this.debugFootTargets = [];
+        this.debugFootPositions = [];
 
         this._createBody(); // Create visual body
         this._createLegs(); // Create visual legs
+        this._createDebugVisualization(); // Create debug objects
 
         // Create main physics body (dynamic)
         if (physicsController) {
@@ -84,7 +93,10 @@ export class Spider {
                 angularDamping: 0.5,
             });
             this.physicsBody.quaternion.copy(this.gameObject.quaternion);
-            physicsController.addBody(this.bodyMesh, this.physicsBody);
+            
+            // DON'T add the bodyMesh to physicsController tracking - we'll handle it manually
+            // This prevents conflicts between gameObject and bodyMesh positioning
+            physicsController.world.addBody(this.physicsBody);
         }
         
         // Make all visual meshes cast shadows
@@ -108,11 +120,11 @@ export class Spider {
         const tibiaGeometry = new THREE.CapsuleGeometry(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH, 6, 10);
 
         const legAttachmentAngles = [
-            -Math.PI / 3.5,   // Front-Right
-             Math.PI / 3.5,   // Front-Left
-            -Math.PI * 0.75,  // Mid-Right
-             Math.PI * 0.75,  // Mid-Left
-             Math.PI          // Back
+            0,                    // Leg 0: Front (0°)
+            2 * Math.PI / 5,      // Leg 1: 72°
+            4 * Math.PI / 5,      // Leg 2: 144° 
+            6 * Math.PI / 5,      // Leg 3: 216°
+            8 * Math.PI / 5       // Leg 4: 288°
         ];
 
         const thighUpwardTilt = Math.PI / 20; // ~9 degrees upward from horizontal
@@ -130,8 +142,7 @@ export class Spider {
             // Orient legGroup: local Y-axis points radially out, then tilts up
             legGroup.lookAt(this.bodyMesh.position);
             legGroup.rotateY(Math.PI);
-            legGroup.rotateX(Math.PI / 2);
-            legGroup.rotateZ(thighUpwardTilt);
+            legGroup.rotateX(Math.PI / 2 + thighUpwardTilt); // Combined base rotation and upward tilt
 
             this.gameObject.add(legGroup);
 
@@ -157,6 +168,32 @@ export class Spider {
             
             // Initialize foot target for this leg
             this.footTargets.push(IKSolver.fingerCurlToFootTarget(0, i, Spider.THIGH_LENGTH, Spider.TIBIA_LENGTH));
+        }
+    }
+
+    /**
+     * Create debug visualization objects for IK debugging
+     * @private
+     */
+    _createDebugVisualization() {
+        const targetGeometry = new THREE.SphereGeometry(0.02, 8, 6);
+        const positionGeometry = new THREE.SphereGeometry(0.015, 8, 6);
+        
+        const targetMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red for targets
+        const positionMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 }); // Green for actual positions
+
+        for (let i = 0; i < Spider.LEG_COUNT; i++) {
+            // Debug foot target (where IK is trying to reach)
+            const targetSphere = new THREE.Mesh(targetGeometry, targetMaterial);
+            targetSphere.name = `debug_target_${i}`;
+            this.gameObject.add(targetSphere);
+            this.debugFootTargets.push(targetSphere);
+            
+            // Debug foot position (where the foot actually is)
+            const positionSphere = new THREE.Mesh(positionGeometry, positionMaterial);
+            positionSphere.name = `debug_position_${i}`;
+            this.gameObject.add(positionSphere);
+            this.debugFootPositions.push(positionSphere);
         }
     }
 
@@ -198,6 +235,12 @@ export class Spider {
     update(handData) {
         if (!handData) return;
 
+        // Sync visual gameObject position with physics body
+        if (this.physicsBody) {
+            this.gameObject.position.copy(this.physicsBody.position);
+            this.gameObject.quaternion.copy(this.physicsBody.quaternion);
+        }
+
         // Extract finger curl values from hand data
         if (handData.fingerCurls && handData.fingerCurls.length >= Spider.LEG_COUNT) {
             for (let i = 0; i < Spider.LEG_COUNT; i++) {
@@ -221,10 +264,10 @@ export class Spider {
         // Apply IK to all legs
         this._updateLegIK();
         
-        // Update foot collider positions (disabled for debugging)
+        // Update foot collider positions
         this._updateFootColliders();
         
-        // Apply ground reaction forces (disabled for debugging)
+        // Apply ground reaction forces
         this._applyGroundForces();
     }
 
@@ -237,6 +280,22 @@ export class Spider {
             const legGroup = this.legGroups[i];
             const target = this.footTargets[i];
 
+            // Update debug target visualization
+            if (this.debugFootTargets[i]) {
+                // Make sure matrices are up to date
+                this.gameObject.updateMatrixWorld(true);
+                
+                // Convert target from leg-local space to world space for visualization
+                const targetWorldPos = target.clone();
+                targetWorldPos.applyMatrix4(legGroup.matrixWorld);
+                
+                // Convert from world space to gameObject local space for positioning
+                const gameObjectWorldMatrixInverse = new THREE.Matrix4().copy(this.gameObject.matrixWorld).invert();
+                targetWorldPos.applyMatrix4(gameObjectWorldMatrixInverse);
+                
+                this.debugFootTargets[i].position.copy(targetWorldPos);
+            }
+
             // Solve IK for this leg
             const ikSolution = IKSolver.solve2BoneIK(
                 target,
@@ -245,8 +304,40 @@ export class Spider {
                 false // Don't flip elbow direction
             );
 
+            // Debug logging for first leg only
+            if (i === 0 && this.gameObject.position.x < 0 && Math.random() < 0.1) { // Only log 10% of the time
+                // Get actual foot position for comparison
+                const actualFootPos = IKSolver.getFootWorldPosition(legGroup, Spider.THIGH_LENGTH, Spider.TIBIA_LENGTH);
+                const targetWorldPos = target.clone();
+                targetWorldPos.applyMatrix4(legGroup.matrixWorld);
+                
+                console.log(`Leg ${i}:`);
+                console.log(`  fingerCurl: ${this.fingerCurls[i].toFixed(2)}`);
+                console.log(`  target (leg-local): (${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${target.z.toFixed(2)})`);
+                console.log(`  target (world): (${targetWorldPos.x.toFixed(2)}, ${targetWorldPos.y.toFixed(2)}, ${targetWorldPos.z.toFixed(2)})`);
+                console.log(`  actual (world): (${actualFootPos.x.toFixed(2)}, ${actualFootPos.y.toFixed(2)}, ${actualFootPos.z.toFixed(2)})`);
+                console.log(`  distance: ${targetWorldPos.distanceTo(actualFootPos).toFixed(3)}`);
+                console.log(`  IK angles: thigh=${ikSolution.thighAngle.toFixed(2)}, tibia=${ikSolution.tibiaAngle.toFixed(2)}, reachable=${ikSolution.reachable}`);
+                console.log('---');
+            }
+
             // Apply the solution to the visual leg
             IKSolver.applyIKToLeg(legGroup, ikSolution.thighAngle, ikSolution.tibiaAngle);
+            
+            // Update debug position visualization
+            if (this.debugFootPositions[i]) {
+                const footWorldPos = IKSolver.getFootWorldPosition(
+                    legGroup, 
+                    Spider.THIGH_LENGTH, 
+                    Spider.TIBIA_LENGTH
+                );
+                
+                // Convert from world space to gameObject local space for positioning
+                const gameObjectWorldMatrixInverse = new THREE.Matrix4().copy(this.gameObject.matrixWorld).invert();
+                footWorldPos.applyMatrix4(gameObjectWorldMatrixInverse);
+                
+                this.debugFootPositions[i].position.copy(footWorldPos);
+            }
         }
     }
 
@@ -256,9 +347,6 @@ export class Spider {
      */
     _updateFootColliders() {
         if (!this.footBodies || this.footBodies.length === 0) return;
-
-        // TEMPORARILY DISABLED for debugging
-        return;
 
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
             const footBody = this.footBodies[i];
@@ -285,25 +373,35 @@ export class Spider {
     _applyGroundForces() {
         if (!this.physicsBody || !this.footBodies) return;
 
-        // TEMPORARILY DISABLED for debugging
+        // TEMPORARILY DISABLED - debugging the flying issue
         return;
 
         // Check each foot for ground contact and apply reaction forces
         for (let i = 0; i < this.footBodies.length; i++) {
             const footBody = this.footBodies[i];
             
-            // Simple ground contact check (Y position near ground level)
-            if (footBody.position.y <= 0.1) {
-                // Calculate force based on finger pressure and body weight
-                const fingerPressure = 1 - this.fingerCurls[i]; // More pressure when extended
-                const forceDirection = new CANNON.Vec3(0, 1, 0); // Upward force
-                const forceMagnitude = fingerPressure * 15; // Adjust for desired responsiveness
-
-                // Apply force from foot position to body
-                const footToBody = new CANNON.Vec3().copy(this.physicsBody.position).vsub(footBody.position);
-                const forcePosition = footBody.position;
-
-                this.physicsBody.applyForce(forceDirection.scale(forceMagnitude), forcePosition);
+            // Check if foot is touching or near the ground
+            if (footBody.position.y <= 0.15) { // Slightly above ground to account for foot radius
+                // Calculate force based on finger position and body weight
+                const fingerExtension = 1 - this.fingerCurls[i]; // More force when finger is extended
+                const footPenetration = Math.max(0, 0.15 - footBody.position.y); // How far "into" ground
+                
+                // Upward force to counteract gravity and support the body
+                const baseForce = 2.0; // Base support force per foot
+                const pressureForce = fingerExtension * 8.0; // Additional force from finger pressure
+                const penetrationForce = footPenetration * 20.0; // Force to push out of ground
+                
+                const totalForceMagnitude = baseForce + pressureForce + penetrationForce;
+                const forceDirection = new CANNON.Vec3(0, totalForceMagnitude, 0);
+                
+                // Apply force at the foot position to create realistic torques
+                const footPosition = new CANNON.Vec3().copy(footBody.position);
+                this.physicsBody.applyForce(forceDirection, footPosition);
+                
+                // Add some damping to prevent oscillation
+                if (this.physicsBody.velocity.y > 0) {
+                    this.physicsBody.velocity.y *= 0.95;
+                }
             }
         }
     }
