@@ -52,9 +52,8 @@ class Game {
         this.debugDisplay.append('Physics controller initialized.');
 
         this.setupScene(); // Spiders will be created here, need physicsController available
-        
+
         // Initialize physics debugger
-        /*
         if (this.scene && this.physicsController) {
             this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
                 // options...
@@ -70,12 +69,10 @@ class Game {
             });
             this.debugDisplay.append('Physics debugger initialized.');
         }
-        */
-        
         this.debugDisplay.append('Scene initialized.');
 
         this.webcamController = new WebcamController('webcam-feed');
-        this.initWebcamAndHandTracking(); 
+        this.initWebcamAndHandTracking();
 
         this.animate = this.animate.bind(this);
         this.animate();
@@ -105,7 +102,7 @@ class Game {
             0.1, // near
             1000 // far
         );
-        this.camera.position.set(0, 1.5, 4); 
+        this.camera.position.set(0, 1.5, 4);
         this.camera.lookAt(0, 0, 0);
     }
 
@@ -140,7 +137,7 @@ class Game {
         this.scene.add(groundMesh);
 
         // Create Spiders
-        const initialFallHeightOffset = 0.6; 
+        const initialFallHeightOffset = 0.6;
         const spiderBaseY = Spider.INITIAL_BODY_Y;
 
         // Player 1 (Red Spider)
@@ -154,7 +151,7 @@ class Game {
         this.debugDisplay.append('Player 2 Spider (Blue) created.');
 
         // Ensure world matrices are updated before initializing leg physics
-        this.scene.updateMatrixWorld(true); 
+        this.scene.updateMatrixWorld(true);
 
         if (this.player1Spider) {
             this.player1Spider.initializeLegPhysics(this.physicsController);
@@ -174,7 +171,7 @@ class Game {
             if (this.webcamController.videoElement) {
                 this.debugDisplay.append('Initializing Hand Tracking...');
                 this.handTrackingController = new HandTrackingController(this.webcamController.videoElement);
-                
+
                 await this.handTrackingController.initialize();
                 this.debugDisplay.append('Hand Tracking initialized successfully.');
 
@@ -212,11 +209,9 @@ class Game {
             this.physicsController.update(deltaTime);
         }
 
-        /*
         if (this.physicsDebugger) {
             this.physicsDebugger.update();
         }
-        */
 
         if (this.handTrackingController && this.handTrackingController.isInitialized &&
             this.webcamController && this.webcamController.isStarted) {
@@ -230,12 +225,12 @@ class Game {
             // Process hand tracking data and update spiders
             if (results) {
                 const processedHandData = HandDataProcessor.processHandResults(results);
-                
+
                 // Update spider 1 (Red) with left hand data
                 if (this.player1Spider && processedHandData.leftHand) {
                     this.player1Spider.update(processedHandData.leftHand);
                 }
-                
+
                 // Update spider 2 (Blue) with right hand data
                 if (this.player2Spider && processedHandData.rightHand) {
                     this.player2Spider.update(processedHandData.rightHand);

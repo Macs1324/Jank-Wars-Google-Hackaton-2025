@@ -129,21 +129,27 @@ export class IKSolver {
         const kneeGroup = legGroup.getObjectByName(`knee_group_${legIndex}`);
         
         if (kneeGroup) {
-            // Store the original base rotation that was set up in _createLegs()
-            const baseUpwardTilt = Math.PI / 20; // Base upward tilt from _createLegs()
+            // Store or retrieve the base rotation quaternion set up during leg creation
+            if (!legGroup.userData.baseQuaternion) {
+                // Store the base quaternion on first run (after initial setup)
+                legGroup.userData.baseQuaternion = legGroup.quaternion.clone();
+            }
             
-            // Apply thigh angle as rotation around the leg's local X-axis
-            // This controls movement in the Y-Z plane (radial-vertical plane)
-            // After the leg setup transforms, X-axis rotation controls up/down tilt
-            legGroup.rotation.x = baseUpwardTilt + thighAngle;
+            // Create rotation quaternion for the thigh angle around the leg's local X-axis
+            // In the leg's coordinate system, X-axis controls up/down tilting
+            const thighRotation = new THREE.Quaternion();
+            thighRotation.setFromAxisAngle(new THREE.Vector3(1, 0, 0), thighAngle);
+            
+            // Apply thigh rotation on top of the base rotation
+            legGroup.quaternion.multiplyQuaternions(legGroup.userData.baseQuaternion, thighRotation);
             
             // Apply tibia angle as rotation around the knee's local X-axis  
             // This controls knee bending - positive angles bend knee "up"
             kneeGroup.rotation.x = tibiaAngle;
             
             // Debug: Log the angles being applied for first leg
-            if (legIndex === 0 && Math.random() < 0.1) {
-                console.log(`Applying angles: thigh=${thighAngle.toFixed(3)} (total X=${legGroup.rotation.x.toFixed(3)}), tibia=${tibiaAngle.toFixed(3)}`);
+            if (legIndex === 0 && Math.random() < 0.05) { // Reduced logging frequency
+                console.log(`IK Applied - Leg ${legIndex}: thigh=${thighAngle.toFixed(3)}rad (${(thighAngle * 180/Math.PI).toFixed(1)}°), tibia=${tibiaAngle.toFixed(3)}rad (${(tibiaAngle * 180/Math.PI).toFixed(1)}°)`);
             }
         }
     }
@@ -192,11 +198,66 @@ export class IKSolver {
         const footWorldPosition = kneeWorldPos.clone();
         footWorldPosition.add(tibiaDirection.multiplyScalar(tibiaLength));
         
-        // Debug: Log foot position calculation for first leg
-        if (legIndex === 0 && Math.random() < 0.1) {
-            console.log(`Foot calc: attach=(${legAttachPoint.x.toFixed(3)}, ${legAttachPoint.y.toFixed(3)}, ${legAttachPoint.z.toFixed(3)}), knee=(${kneeWorldPos.x.toFixed(3)}, ${kneeWorldPos.y.toFixed(3)}, ${kneeWorldPos.z.toFixed(3)}), foot=(${footWorldPosition.x.toFixed(3)}, ${footWorldPosition.y.toFixed(3)}, ${footWorldPosition.z.toFixed(3)})`);
+        // Debug: Log foot position calculation for first leg (reduced frequency)
+        if (legIndex === 0 && Math.random() < 0.02) {
+            console.log(`Foot Position - attach: (${legAttachPoint.x.toFixed(2)}, ${legAttachPoint.y.toFixed(2)}, ${legAttachPoint.z.toFixed(2)}), knee: (${kneeWorldPos.x.toFixed(2)}, ${kneeWorldPos.y.toFixed(2)}, ${kneeWorldPos.z.toFixed(2)}), foot: (${footWorldPosition.x.toFixed(2)}, ${footWorldPosition.y.toFixed(2)}, ${footWorldPosition.z.toFixed(2)})`);
         }
         
         return footWorldPosition;
     }
+
+    /**
+     * Debug utilities for IK solver visualization and analysis
+     */
+    static debugUtils = {
+        /**
+         * Add visual axes to a leg group to help debug coordinate systems
+         * @param {THREE.Group} legGroup - The leg group to add axes to
+         * @param {number} [size=0.1] - Size of the axes
+         */
+        addAxesToLeg(legGroup, size = 0.1) {
+            const legIndex = legGroup.userData.legIndex || 0;
+            const existingAxes = legGroup.getObjectByName(`debug_axes_${legIndex}`);
+            if (existingAxes) {
+                legGroup.remove(existingAxes);
+            }
+
+            const axesHelper = new THREE.AxesHelper(size);
+            axesHelper.name = `debug_axes_${legIndex}`;
+            legGroup.add(axesHelper);
+        },
+
+        /**
+         * Log detailed IK solution for debugging
+         * @param {number} legIndex - Index of the leg
+         * @param {THREE.Vector3} target - Target position in leg-local space
+         * @param {Object} ikSolution - The IK solution object
+         * @param {THREE.Vector3} actualFootPos - Actual foot position in world space
+         */
+        logIKSolution(legIndex, target, ikSolution, actualFootPos) {
+            console.group(`🕷️ IK Debug - Leg ${legIndex}`);
+            console.log(`Target (leg-local): (${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`);
+            console.log(`Thigh angle: ${ikSolution.thighAngle.toFixed(3)}rad (${(ikSolution.thighAngle * 180/Math.PI).toFixed(1)}°)`);
+            console.log(`Tibia angle: ${ikSolution.tibiaAngle.toFixed(3)}rad (${(ikSolution.tibiaAngle * 180/Math.PI).toFixed(1)}°)`);
+            console.log(`Reachable: ${ikSolution.reachable}`);
+            console.log(`Actual foot (world): (${actualFootPos.x.toFixed(3)}, ${actualFootPos.y.toFixed(3)}, ${actualFootPos.z.toFixed(3)})`);
+            console.groupEnd();
+        },
+
+        /**
+         * Test IK solver with a range of finger curl values
+         * @param {number} legIndex - Index of the leg to test
+         * @param {number} thighLength - Length of the thigh
+         * @param {number} tibiaLength - Length of the tibia
+         */
+        testFingerCurlRange(legIndex, thighLength, tibiaLength) {
+            console.group(`🧪 IK Finger Curl Test - Leg ${legIndex}`);
+            for (let curl = 0; curl <= 1; curl += 0.2) {
+                const target = IKSolver.fingerCurlToFootTarget(curl, legIndex, thighLength, tibiaLength);
+                const solution = IKSolver.solve2BoneIK(target, thighLength, tibiaLength);
+                console.log(`Curl ${curl.toFixed(1)}: target=(${target.x.toFixed(2)}, ${target.y.toFixed(2)}, ${target.z.toFixed(2)}), thigh=${(solution.thighAngle * 180/Math.PI).toFixed(1)}°, tibia=${(solution.tibiaAngle * 180/Math.PI).toFixed(1)}°, reachable=${solution.reachable}`);
+            }
+            console.groupEnd();
+        }
+    };
 } 
