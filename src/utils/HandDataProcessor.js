@@ -12,31 +12,31 @@ export class HandDataProcessor {
      */
     static LANDMARK_INDICES = {
         WRIST: 0,
-        
+
         // Thumb: [1, 2, 3, 4]
         THUMB_CMC: 1,
         THUMB_MCP: 2,
         THUMB_IP: 3,
         THUMB_TIP: 4,
-        
+
         // Index finger: [5, 6, 7, 8]
         INDEX_MCP: 5,
         INDEX_PIP: 6,
         INDEX_DIP: 7,
         INDEX_TIP: 8,
-        
+
         // Middle finger: [9, 10, 11, 12]
         MIDDLE_MCP: 9,
         MIDDLE_PIP: 10,
         MIDDLE_DIP: 11,
         MIDDLE_TIP: 12,
-        
+
         // Ring finger: [13, 14, 15, 16]
         RING_MCP: 13,
         RING_PIP: 14,
         RING_DIP: 15,
         RING_TIP: 16,
-        
+
         // Pinky finger: [17, 18, 19, 20]
         PINKY_MCP: 17,
         PINKY_PIP: 18,
@@ -58,7 +58,7 @@ export class HandDataProcessor {
     /**
      * Low-pass filter for smoothing finger curl values.
      */
-    static smoothingFactor = 0.7; // Higher = more smoothing
+    static smoothingFactor = 0.5; // Higher = more smoothing
 
     /**
      * Previous finger curl values for smoothing.
@@ -83,17 +83,17 @@ export class HandDataProcessor {
         for (let i = 0; i < handResults.landmarks.length; i++) {
             const landmarks = handResults.landmarks[i];
             const handedness = handResults.handedness[i];
-            
+
             // Determine if this is left or right hand
             const isLeftHand = handedness && handedness[0] && handedness[0].categoryName === 'Left';
             const handKey = isLeftHand ? 'leftHand' : 'rightHand';
-            
+
             // Extract finger curl values
             const fingerCurls = this.extractFingerCurls(landmarks);
-            
+
             // Apply smoothing
             const smoothedCurls = this.applySmoothingFilter(fingerCurls, handKey);
-            
+
             processedData[handKey] = {
                 fingerCurls: smoothedCurls,
                 landmarks: landmarks,
@@ -160,17 +160,17 @@ export class HandDataProcessor {
         // When finger is extended, tip is far from wrist
         // When finger is curled, tip is closer to wrist
         const ratio = tipToWristDistance / baseToWristDistance;
-        
+
         // Typical values: extended ≈ 2.0-2.5, curled ≈ 1.0-1.3
         // Map this to 0-1 range
         const extendedRatio = 2.2; // Calibrated for typical hand
         const curledRatio = 1.1;
-        
+
         let curl = (extendedRatio - ratio) / (extendedRatio - curledRatio);
-        
+
         // Clamp to 0-1 range
         curl = Math.max(0, Math.min(1, curl));
-        
+
         return curl;
     }
 
@@ -209,16 +209,16 @@ export class HandDataProcessor {
         // When thumb is extended (pointing away), tip is far from palm
         // When thumb is curled (touching palm), tip is close to palm
         const ratio = tipToPalmDistance / mcpToPalmDistance;
-        
+
         // Typical values for thumb: extended ≈ 1.8-2.2, curled ≈ 0.3-0.7
         const extendedRatio = 2.0;
         const curledRatio = 0.5;
-        
+
         let curl = (extendedRatio - ratio) / (extendedRatio - curledRatio);
-        
+
         // Clamp to 0-1 range
         curl = Math.max(0, Math.min(1, curl));
-        
+
         return curl;
     }
 
@@ -234,14 +234,14 @@ export class HandDataProcessor {
         const smoothedCurls = [];
 
         for (let i = 0; i < currentCurls.length; i++) {
-            const smoothed = previousCurls[i] * this.smoothingFactor + 
-                            currentCurls[i] * (1 - this.smoothingFactor);
+            const smoothed = previousCurls[i] * this.smoothingFactor +
+                currentCurls[i] * (1 - this.smoothingFactor);
             smoothedCurls.push(smoothed);
         }
 
         // Store for next frame
         this.previousCurls.set(handKey, smoothedCurls);
-        
+
         return smoothedCurls;
     }
 
@@ -290,7 +290,7 @@ export class HandDataProcessor {
         if (!handData || !handData.fingerCurls) return false;
 
         // Check if all finger curl values are within reasonable range
-        return handData.fingerCurls.every(curl => 
+        return handData.fingerCurls.every(curl =>
             curl >= 0 && curl <= 1 && !isNaN(curl)
         );
     }

@@ -107,8 +107,8 @@ export class IKSolver {
         
         // Vertical position (Z-axis): height relative to leg attachment point
         // Extended the downward range so feet can actually reach the ground
-        const groundLevel = -maxReach * 0.8;        // Much lower - nearly full leg extension downward
-        const liftedHeight = maxReach * 0.4;        // Higher lift when curled for dramatic spider movement
+        const groundLevel = -maxReach * 0.95;       // Nearly full leg extension downward for maximum ground reach
+        const liftedHeight = maxReach * 0.5;        // Higher lift when curled for dramatic spider movement
         const zTarget = THREE.MathUtils.lerp(groundLevel, liftedHeight, fingerCurl);
         
         // Side-to-side (X-axis): minimal for now, could add knuckle control later

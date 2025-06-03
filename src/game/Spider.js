@@ -35,6 +35,10 @@ export class Spider {
     /** @type {CANNON.Body[]} Physics bodies for tibia segments. */
     tibiaBodies = [];
 
+    // Ground contact state tracking for impulses
+    /** @type {boolean[]} Track which feet were touching ground last frame */
+    wasGroundContact = [];
+
     // Debug objects
     debugFootTargets = [];
     debugFootPositions = [];
@@ -44,10 +48,10 @@ export class Spider {
     static BODY_RADIUS = 0.20;
 
     static THIGH_RADIUS = 0.035;
-    static THIGH_LENGTH = 0.18;
+    static THIGH_LENGTH = 0.27;
 
     static TIBIA_RADIUS = 0.03;
-    static TIBIA_LENGTH = 0.28;
+    static TIBIA_LENGTH = 0.42;
 
     // Target Y position for the center of the spider's body
     static INITIAL_BODY_Y = 0.33;
@@ -127,13 +131,21 @@ export class Spider {
         const thighGeometry = new THREE.CapsuleGeometry(Spider.THIGH_RADIUS, Spider.THIGH_LENGTH, 6, 10);
         const tibiaGeometry = new THREE.CapsuleGeometry(Spider.TIBIA_RADIUS, Spider.TIBIA_LENGTH, 6, 10);
 
-        const legAttachmentAngles = [
+        // Base leg attachment angles (clockwise)
+        const baseLegAttachmentAngles = [
             0,                    // Leg 0: Front (0°)
             2 * Math.PI / 5,      // Leg 1: 72°
             4 * Math.PI / 5,      // Leg 2: 144° 
             6 * Math.PI / 5,      // Leg 3: 216°
             8 * Math.PI / 5       // Leg 4: 288°
         ];
+
+        // For left spider (x < 0), use clockwise arrangement
+        // For right spider (x >= 0), use counter-clockwise arrangement
+        const isLeftSpider = this.gameObject.position.x < 0;
+        const legAttachmentAngles = isLeftSpider ? 
+            baseLegAttachmentAngles : // Left spider gets clockwise (normal)
+            baseLegAttachmentAngles.map((angle, i) => i === 0 ? angle : -angle + 2 * Math.PI); // Right spider gets counter-clockwise
 
         const thighUpwardTilt = Math.PI / 20; // ~9 degrees upward from horizontal
 
@@ -184,25 +196,26 @@ export class Spider {
      * @private
      */
     _createDebugVisualization() {
-        const targetGeometry = new THREE.SphereGeometry(0.02, 8, 6);
-        const positionGeometry = new THREE.SphereGeometry(0.015, 8, 6);
+        // Debug visualization disabled - was causing visual clutter
+        // const targetGeometry = new THREE.SphereGeometry(0.02, 8, 6);
+        // const positionGeometry = new THREE.SphereGeometry(0.015, 8, 6);
 
-        const targetMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red for targets
-        const positionMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 }); // Green for actual positions
+        // const targetMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 }); // Red for targets
+        // const positionMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 }); // Green for actual positions
 
-        for (let i = 0; i < Spider.LEG_COUNT; i++) {
-            // Debug foot target (where IK is trying to reach)
-            const targetSphere = new THREE.Mesh(targetGeometry, targetMaterial);
-            targetSphere.name = `debug_target_${i}`;
-            this.gameObject.add(targetSphere);
-            this.debugFootTargets.push(targetSphere);
+        // for (let i = 0; i < Spider.LEG_COUNT; i++) {
+        //     // Debug foot target (where IK is trying to reach)
+        //     const targetSphere = new THREE.Mesh(targetGeometry, targetMaterial);
+        //     targetSphere.name = `debug_target_${i}`;
+        //     this.gameObject.add(targetSphere);
+        //     this.debugFootTargets.push(targetSphere);
 
-            // Debug foot position (where the foot actually is)
-            const positionSphere = new THREE.Mesh(positionGeometry, positionMaterial);
-            positionSphere.name = `debug_position_${i}`;
-            this.gameObject.add(positionSphere);
-            this.debugFootPositions.push(positionSphere);
-        }
+        //     // Debug foot position (where the foot actually is)
+        //     const positionSphere = new THREE.Mesh(positionGeometry, positionMaterial);
+        //     positionSphere.name = `debug_position_${i}`;
+        //     this.gameObject.add(positionSphere);
+        //     this.debugFootPositions.push(positionSphere);
+        // }
     }
 
     /**
@@ -228,7 +241,7 @@ export class Spider {
                 Spider.THIGH_LENGTH,    // height
                 8                       // numSegments
             );
-            
+
             const thighBody = new CANNON.Body({
                 mass: 0.1, // Small mass - will be constrained to main body
                 shape: thighShape,
@@ -247,7 +260,7 @@ export class Spider {
                 Spider.TIBIA_LENGTH,    // height
                 8                       // numSegments
             );
-            
+
             const tibiaBody = new CANNON.Body({
                 mass: 0.05, // Small mass - will be constrained to main body
                 shape: tibiaShape,
@@ -303,20 +316,20 @@ export class Spider {
      * @param {Object} handData - Hand tracking data with finger positions
      */
     update(handData) {
-        if (!handData) return;
-
-        // Sync visual gameObject position with physics body
+        // Always sync visual gameObject position with physics body
         if (this.physicsBody) {
             this.gameObject.position.copy(this.physicsBody.position);
             this.gameObject.quaternion.copy(this.physicsBody.quaternion);
         }
 
-        // Extract finger curl values from hand data
-        if (handData.fingerCurls && handData.fingerCurls.length >= Spider.LEG_COUNT) {
+        // Process hand tracking data if available
+        if (handData && handData.fingerCurls && handData.fingerCurls.length >= Spider.LEG_COUNT) {
+            // Now that legs are arranged differently for left vs right spiders,
+            // we can use direct finger mapping for both
+            
+            // Extract finger curl values from hand data
             for (let i = 0; i < Spider.LEG_COUNT; i++) {
                 this.fingerCurls[i] = handData.fingerCurls[i];
-
-                // Update foot target based on finger curl
                 this.footTargets[i] = IKSolver.fingerCurlToFootTarget(
                     this.fingerCurls[i],
                     i,
@@ -325,20 +338,33 @@ export class Spider {
                 );
             }
 
-            // Debug: Log finger curls for first spider only
+            // Debug: Detailed finger mapping for both spiders
             if (this.gameObject.position.x < 0) { // Left spider (red)
-                console.log('Finger curls:', handData.fingerCurls.map(c => c.toFixed(2)).join(', '));
+                console.log('🕷️ LEFT SPIDER - Direct mapping (clockwise legs):');
+                console.log('  Raw hand data:', handData.fingerCurls.map(c => c.toFixed(2)).join(', '));
+                console.log('  Applied to legs:', this.fingerCurls.map(c => c.toFixed(2)).join(', '));
+                console.log('  Finger→Leg: Thumb→0(front), Index→1(front-right), Middle→2(back-right), Ring→3(back-left), Pinky→4(front-left)');
+            } else { // Right spider (blue)
+                console.log('🕷️ RIGHT SPIDER - Direct mapping (counter-clockwise legs):');
+                console.log('  Raw hand data:', handData.fingerCurls.map(c => c.toFixed(2)).join(', '));
+                console.log('  Applied to legs:', this.fingerCurls.map(c => c.toFixed(2)).join(', '));
+                console.log('  Finger→Leg: Thumb→0(front), Index→1(front-left), Middle→2(back-left), Ring→3(back-right), Pinky→4(front-right)');
             }
+
+            // Apply IK to all legs based on hand data
+            this._updateLegIK();
         }
 
-        // Apply IK to all legs
-        this._updateLegIK();
-
-        // Update foot collider positions
+        // Always update physics collider positions to match visual legs
         this._updateFootColliders();
 
-        // Apply ground reaction forces
+        // Always apply ground reaction forces (even with default finger positions)
         this._applyGroundForces();
+
+        // If no hand data available but we have physics bodies, make visual legs follow physics
+        if (!handData && this.thighBodies && this.tibiaBodies && this.thighBodies.length > 0) {
+            this._syncVisualsToPhysics();
+        }
     }
 
     /**
@@ -350,21 +376,21 @@ export class Spider {
             const legGroup = this.legGroups[i];
             const target = this.footTargets[i];
 
-            // Update debug target visualization
-            if (this.debugFootTargets[i]) {
-                // Make sure matrices are up to date
-                this.gameObject.updateMatrixWorld(true);
+            // Debug target visualization disabled
+            // if (this.debugFootTargets[i]) {
+            //     // Make sure matrices are up to date
+            //     this.gameObject.updateMatrixWorld(true);
 
-                // Convert target from leg-local space to world space for visualization
-                const targetWorldPos = target.clone();
-                targetWorldPos.applyMatrix4(legGroup.matrixWorld);
+            //     // Convert target from leg-local space to world space for visualization
+            //     const targetWorldPos = target.clone();
+            //     targetWorldPos.applyMatrix4(legGroup.matrixWorld);
 
-                // Convert from world space to gameObject local space for positioning
-                const gameObjectWorldMatrixInverse = new THREE.Matrix4().copy(this.gameObject.matrixWorld).invert();
-                targetWorldPos.applyMatrix4(gameObjectWorldMatrixInverse);
+            //     // Convert from world space to gameObject local space for positioning
+            //     const gameObjectWorldMatrixInverse = new THREE.Matrix4().copy(this.gameObject.matrixWorld).invert();
+            //     targetWorldPos.applyMatrix4(gameObjectWorldMatrixInverse);
 
-                this.debugFootTargets[i].position.copy(targetWorldPos);
-            }
+            //     this.debugFootTargets[i].position.copy(targetWorldPos);
+            // }
 
             // Solve IK for this leg
             const ikSolution = IKSolver.solve2BoneIK(
@@ -386,20 +412,20 @@ export class Spider {
             // Apply the solution to the visual leg
             IKSolver.applyIKToLeg(legGroup, ikSolution.thighAngle, ikSolution.tibiaAngle);
 
-            // Update debug position visualization
-            if (this.debugFootPositions[i]) {
-                const footWorldPos = IKSolver.getFootWorldPosition(
-                    legGroup,
-                    Spider.THIGH_LENGTH,
-                    Spider.TIBIA_LENGTH
-                );
+            // Debug position visualization disabled
+            // if (this.debugFootPositions[i]) {
+            //     const footWorldPos = IKSolver.getFootWorldPosition(
+            //         legGroup,
+            //         Spider.THIGH_LENGTH,
+            //         Spider.TIBIA_LENGTH
+            //     );
 
-                // Convert from world space to gameObject local space for positioning
-                const gameObjectWorldMatrixInverse = new THREE.Matrix4().copy(this.gameObject.matrixWorld).invert();
-                footWorldPos.applyMatrix4(gameObjectWorldMatrixInverse);
+            //     // Convert from world space to gameObject local space for positioning
+            //     const gameObjectWorldMatrixInverse = new THREE.Matrix4().copy(this.gameObject.matrixWorld).invert();
+            //     footWorldPos.applyMatrix4(gameObjectWorldMatrixInverse);
 
-                this.debugFootPositions[i].position.copy(footWorldPos);
-            }
+            //     this.debugFootPositions[i].position.copy(footWorldPos);
+            // }
         }
     }
 
@@ -427,10 +453,10 @@ export class Spider {
             if (thighMesh) {
                 const thighWorldPos = new THREE.Vector3();
                 const thighWorldQuat = new THREE.Quaternion();
-                
+
                 thighMesh.getWorldPosition(thighWorldPos);
                 thighMesh.getWorldQuaternion(thighWorldQuat);
-                
+
                 thighBody.position.copy(thighWorldPos);
                 thighBody.quaternion.copy(thighWorldQuat);
 
@@ -438,16 +464,16 @@ export class Spider {
                 if (thighBody.constraint) {
                     const legAttachPoint = legGroup.position.clone();
                     legAttachPoint.applyMatrix4(this.gameObject.matrixWorld);
-                    
+
                     // Calculate relative position from spider body to leg attachment
                     const relativePos = new CANNON.Vec3(
                         legAttachPoint.x - this.physicsBody.position.x,
                         legAttachPoint.y - this.physicsBody.position.y,
                         legAttachPoint.z - this.physicsBody.position.z
                     );
-                    
+
                     thighBody.constraint.pivotA.copy(relativePos);
-                    thighBody.constraint.pivotB.set(0, -Spider.THIGH_LENGTH/2, 0); // Attach at base of thigh
+                    thighBody.constraint.pivotB.set(0, -Spider.THIGH_LENGTH / 2, 0); // Attach at base of thigh
                 }
             }
 
@@ -458,10 +484,10 @@ export class Spider {
                 if (tibiaMesh) {
                     const tibiaWorldPos = new THREE.Vector3();
                     const tibiaWorldQuat = new THREE.Quaternion();
-                    
+
                     tibiaMesh.getWorldPosition(tibiaWorldPos);
                     tibiaMesh.getWorldQuaternion(tibiaWorldQuat);
-                    
+
                     tibiaBody.position.copy(tibiaWorldPos);
                     tibiaBody.quaternion.copy(tibiaWorldQuat);
 
@@ -469,16 +495,16 @@ export class Spider {
                     if (tibiaBody.constraint) {
                         const kneeWorldPos = new THREE.Vector3();
                         kneeGroup.getWorldPosition(kneeWorldPos);
-                        
+
                         // Calculate relative position from spider body to knee
                         const relativePos = new CANNON.Vec3(
                             kneeWorldPos.x - this.physicsBody.position.x,
                             kneeWorldPos.y - this.physicsBody.position.y,
                             kneeWorldPos.z - this.physicsBody.position.z
                         );
-                        
+
                         tibiaBody.constraint.pivotA.copy(relativePos);
-                        tibiaBody.constraint.pivotB.set(0, -Spider.TIBIA_LENGTH/2, 0); // Attach at base of tibia
+                        tibiaBody.constraint.pivotB.set(0, -Spider.TIBIA_LENGTH / 2, 0); // Attach at base of tibia
                     }
                 }
             }
@@ -500,84 +526,109 @@ export class Spider {
     _applyGroundForces() {
         if (!this.physicsBody || !this.footBodies) return;
 
-        // New approach: Body stays as rigidbody, legs provide collision support
-        // When legs touch ground, they act like extending the spider's collision shape
-        
+        // Initialize ground contact tracking if needed
+        if (this.wasGroundContact.length === 0) {
+            this.wasGroundContact = new Array(Spider.LEG_COUNT).fill(false);
+        }
+
         const groundLevel = 0.0;
         const footRadius = Spider.TIBIA_RADIUS * 1.5;
-        const contactThreshold = groundLevel + footRadius + 0.1; // Increased threshold for easier detection
+        const contactThreshold = groundLevel + footRadius + 0.15; // Generous threshold for detection
         
-        let supportForce = 0;
-        let hasGroundContact = false;
         let debugInfo = [];
         
-        // Check each leg for ground contact and apply upward support forces
+        // Check each leg for NEW ground contact and apply impulses
         for (let i = 0; i < this.footBodies.length; i++) {
             const footBody = this.footBodies[i];
             const fingerExtension = 1 - this.fingerCurls[i]; // How extended this finger is
             
             const footY = footBody.position.y;
             const isNearGround = footY <= contactThreshold;
-            const isExtended = fingerExtension > 0.1; // Lower threshold
-            const shouldSupport = isNearGround && isExtended;
+            const isExtended = fingerExtension > 0.15; // Lower threshold for easier control
+            const isGroundContact = isNearGround && isExtended;
+            
+            // Only apply impulse when foot FIRST makes contact (not continuously)
+            const wasContactLastFrame = this.wasGroundContact[i];
+            const isNewContact = isGroundContact && !wasContactLastFrame;
             
             debugInfo.push({
                 leg: i,
                 footY: footY.toFixed(3),
-                nearGround: isNearGround,
-                extended: isExtended,
                 extension: fingerExtension.toFixed(2),
-                supporting: shouldSupport
+                contact: isGroundContact,
+                newContact: isNewContact
             });
             
-            // Only provide support if finger is extended (player is "pressing down")
-            if (shouldSupport) {
-                hasGroundContact = true;
+            if (isNewContact) {
+                // Apply impulse when foot first touches ground
+                const impulseStrength = fingerExtension * 3.5; // Impulse based on finger extension
                 
-                // Calculate support force based on how extended the finger is
-                const penetrationDepth = Math.max(0, contactThreshold - footY);
-                const baseSupport = fingerExtension * 8.0; // Increased base support force
-                const penetrationForce = penetrationDepth * 50.0; // Increased penetration force
+                // Apply upward impulse to counter gravity and lift spider
+                const upwardImpulse = new CANNON.Vec3(0, impulseStrength, 0);
+                this.physicsBody.applyImpulse(upwardImpulse);
                 
-                const legForce = baseSupport + penetrationForce;
-                supportForce += legForce;
-                
-                // Apply upward force directly to body at the leg attachment point
+                // Apply impulse at leg attachment point for forward momentum
                 const legAttachmentPoint = this.legGroups[i].position.clone();
                 legAttachmentPoint.applyMatrix4(this.gameObject.matrixWorld);
                 
-                // Convert to relative position from body center
                 const relativePos = new CANNON.Vec3(
                     legAttachmentPoint.x - this.physicsBody.position.x,
-                    legAttachmentPoint.y - this.physicsBody.position.y, 
+                    legAttachmentPoint.y - this.physicsBody.position.y,
                     legAttachmentPoint.z - this.physicsBody.position.z
                 );
                 
-                const upwardForce = new CANNON.Vec3(0, legForce, 0);
-                this.physicsBody.applyForce(upwardForce, relativePos);
+                // Apply additional impulse at leg position for torque and propulsion
+                const propulsiveImpulse = new CANNON.Vec3(0, impulseStrength * 0.6, 0);
+                this.physicsBody.applyImpulse(propulsiveImpulse, relativePos);
                 
-                debugInfo[i].force = legForce.toFixed(1);
-                debugInfo[i].penetration = penetrationDepth.toFixed(3);
+                debugInfo[i].impulse = impulseStrength.toFixed(1);
             }
-        }
-        
-        // Apply overall support to counteract gravity when legs are supporting
-        if (hasGroundContact && supportForce > 0) {
-            // Counter gravity plus extra for lift
-            const gravityCounterForce = new CANNON.Vec3(0, 12.0 + supportForce * 0.8, 0); // Increased forces
-            this.physicsBody.applyForce(gravityCounterForce);
             
-            // Add some damping to prevent bouncing
-            if (this.physicsBody.velocity.y > 0.2) {
-                this.physicsBody.velocity.y *= 0.7;
-            }
+            // Update ground contact state for next frame
+            this.wasGroundContact[i] = isGroundContact;
         }
         
-        // Debug log for first spider - show all leg states
-        if (Math.random() < 0.1 && this.gameObject.position.x < 0) {
-            console.log(`🕷️ Body Y: ${this.physicsBody.position.y.toFixed(3)}, Vel Y: ${this.physicsBody.velocity.y.toFixed(3)}`);
-            console.log(`Ground contact: ${hasGroundContact}, Total force: ${supportForce.toFixed(1)}`);
-            console.log('Leg states:', debugInfo);
+        // Debug log for first spider occasionally
+        if (Math.random() < 0.05 && this.gameObject.position.x < 0) {
+            const newContacts = debugInfo.filter(leg => leg.newContact).length;
+            if (newContacts > 0) {
+                console.log(`🕷️ New ground contacts: ${newContacts}`);
+                console.log('Leg states:', debugInfo.filter(leg => leg.newContact));
+            }
+        }
+    }
+
+    /**
+     * Sync visual leg meshes to physics body positions when no hand tracking is available.
+     * @private
+     */
+    _syncVisualsToPhysics() {
+        for (let i = 0; i < Spider.LEG_COUNT; i++) {
+            const legGroup = this.legGroups[i];
+            const thighBody = this.thighBodies[i];
+            const tibiaBody = this.tibiaBodies[i];
+
+            if (!legGroup || !thighBody || !tibiaBody) continue;
+
+            // Get thigh mesh and sync to physics body
+            const thighMesh = legGroup.getObjectByName(`thigh_${i}`);
+            if (thighMesh && thighBody.position.length() > 0) {
+                // Convert physics body world position back to mesh local position
+                const thighWorldPos = new THREE.Vector3().copy(thighBody.position);
+                const thighWorldQuat = new THREE.Quaternion().copy(thighBody.quaternion);
+
+                // Update the leg group transformation to match physics
+                // This is a simplified sync - in practice you might want more sophisticated IK solving
+                // For now, just ensure the visual doesn't drift too far from physics
+                const currentThighPos = new THREE.Vector3();
+                thighMesh.getWorldPosition(currentThighPos);
+
+                const drift = currentThighPos.distanceTo(thighWorldPos);
+                if (drift > 0.1) { // If visual drifts too far from physics, snap back
+                    thighMesh.position.copy(thighBody.position);
+                    thighMesh.quaternion.copy(thighBody.quaternion);
+                }
+            }
         }
     }
 

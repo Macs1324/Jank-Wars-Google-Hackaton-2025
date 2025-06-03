@@ -54,21 +54,21 @@ class Game {
         this.setupScene(); // Spiders will be created here, need physicsController available
 
         // Initialize physics debugger
-        if (this.scene && this.physicsController) {
-            this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
-                // options...
-                color: 0xff0000, // Default color for shapes
-                scale: 1, // Scale of the debug meshes
-                onInit: (body, mesh, shape) => {
-                    // You can customize the mesh here if needed
-                    // For example, make constraints invisible by default
-                    if (mesh.isLineSegments) { // Constraints are often LineSegments
-                        // mesh.visible = false;
-                    }
-                },
-            });
-            this.debugDisplay.append('Physics debugger initialized.');
-        }
+        // if (this.scene && this.physicsController) {
+        //     this.physicsDebugger = cannonDebugger(this.scene, this.physicsController.world, {
+        //         // options...
+        //         color: 0xff0000, // Default color for shapes
+        //         scale: 1, // Scale of the debug meshes
+        //         onInit: (body, mesh, shape) => {
+        //             // You can customize the mesh here if needed
+        //             // For example, make constraints invisible by default
+        //             if (mesh.isLineSegments) { // Constraints are often LineSegments
+        //                 // mesh.visible = false;
+        //             }
+        //         },
+        //     });
+        //     this.debugDisplay.append('Physics debugger initialized.');
+        // }
         this.debugDisplay.append('Scene initialized.');
 
         this.webcamController = new WebcamController('webcam-feed');
