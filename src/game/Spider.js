@@ -29,6 +29,12 @@ export class Spider {
     /** @type {number[]} Current finger curl values (0-1) for each leg */
     fingerCurls = [];
 
+    // Full leg physics bodies
+    /** @type {CANNON.Body[]} Physics bodies for thigh segments. */
+    thighBodies = [];
+    /** @type {CANNON.Body[]} Physics bodies for tibia segments. */
+    tibiaBodies = [];
+
     // Debug objects
     debugFootTargets = [];
     debugFootPositions = [];
@@ -91,6 +97,8 @@ export class Spider {
                 shape: bodyShape,
                 material: physicsController.createDefaultMaterial(),
                 angularDamping: 0.5,
+                collisionFilterGroup: 16, // Spider body collision group
+                collisionFilterMask: 1 | 8 | 16,  // Collide with ground, legs, and other spider bodies
             });
             this.physicsBody.quaternion.copy(this.gameObject.quaternion);
 
@@ -198,7 +206,7 @@ export class Spider {
     }
 
     /**
-     * Initializes kinematic foot colliders for ground interaction.
+     * Initializes kinematic leg segment colliders for full leg collision.
      * @param {import('../core/PhysicsController.js').PhysicsController} physicsController
      */
     initializeLegPhysics(physicsController) {
@@ -207,25 +215,87 @@ export class Spider {
             return;
         }
 
-        this.footBodies = [];
+        this.thighBodies = [];
+        this.tibiaBodies = [];
+        this.footBodies = []; // Keep for compatibility with ground force detection
 
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
-            // Create small sphere colliders for feet
-            const footShape = new CANNON.Sphere(Spider.TIBIA_RADIUS * 1.5);
+            // Create capsule collider for thigh segment
+            // Note: Cannon-ES doesn't have native capsules, so we'll use a cylinder
+            const thighShape = new CANNON.Cylinder(
+                Spider.THIGH_RADIUS,    // radiusTop
+                Spider.THIGH_RADIUS,    // radiusBottom  
+                Spider.THIGH_LENGTH,    // height
+                8                       // numSegments
+            );
+            
+            const thighBody = new CANNON.Body({
+                mass: 0.1, // Small mass - will be constrained to main body
+                shape: thighShape,
+                material: physicsController.createDefaultMaterial(),
+                collisionFilterGroup: 8, // Leg collision group
+                collisionFilterMask: 1 | 8 | 16,  // Collide with ground, other legs, and spider bodies
+            });
+
+            this.thighBodies.push(thighBody);
+            physicsController.world.addBody(thighBody);
+
+            // Create capsule collider for tibia segment  
+            const tibiaShape = new CANNON.Cylinder(
+                Spider.TIBIA_RADIUS,    // radiusTop
+                Spider.TIBIA_RADIUS,    // radiusBottom
+                Spider.TIBIA_LENGTH,    // height
+                8                       // numSegments
+            );
+            
+            const tibiaBody = new CANNON.Body({
+                mass: 0.05, // Small mass - will be constrained to main body
+                shape: tibiaShape,
+                material: physicsController.createDefaultMaterial(),
+                collisionFilterGroup: 8, // Leg collision group
+                collisionFilterMask: 1 | 8 | 16,  // Collide with ground, other legs, and spider bodies
+            });
+
+            this.tibiaBodies.push(tibiaBody);
+            physicsController.world.addBody(tibiaBody);
+
+            // Create small sphere at foot tip for ground contact detection (invisible helper)
+            const footShape = new CANNON.Sphere(Spider.TIBIA_RADIUS * 0.8);
             const footBody = new CANNON.Body({
-                mass: 0, // Kinematic body
+                mass: 0,
                 shape: footShape,
                 material: physicsController.createDefaultMaterial(),
                 type: CANNON.Body.KINEMATIC,
-                collisionFilterGroup: 4, // Foot collision group
-                collisionFilterMask: 1,  // Collide with ground
+                collisionFilterGroup: 4, // Separate group for ground detection
+                collisionFilterMask: 1,  // Only collide with ground
             });
 
             this.footBodies.push(footBody);
             physicsController.world.addBody(footBody);
+
+            // Create constraints to bind leg segments to the main spider body
+            const thighConstraint = new CANNON.PointToPointConstraint(
+                this.physicsBody,
+                new CANNON.Vec3(0, 0, 0), // Will be updated in _updateFootColliders
+                thighBody,
+                new CANNON.Vec3(0, 0, 0)
+            );
+            physicsController.world.addConstraint(thighConstraint);
+
+            const tibiaConstraint = new CANNON.PointToPointConstraint(
+                this.physicsBody,
+                new CANNON.Vec3(0, 0, 0), // Will be updated in _updateFootColliders
+                tibiaBody,
+                new CANNON.Vec3(0, 0, 0)
+            );
+            physicsController.world.addConstraint(tibiaConstraint);
+
+            // Store constraints for updating
+            thighBody.constraint = thighConstraint;
+            tibiaBody.constraint = tibiaConstraint;
         }
 
-        console.log("Spider: Initialized kinematic foot colliders.");
+        console.log("Spider: Initialized leg segment colliders with physics constraints.");
     }
 
     /**
@@ -308,7 +378,7 @@ export class Spider {
             if (i === 0 && this.gameObject.position.x < 0 && Math.random() < 0.1) { // Only log 10% of the time
                 // Get actual foot position for comparison
                 const actualFootPos = IKSolver.getFootWorldPosition(legGroup, Spider.THIGH_LENGTH, Spider.TIBIA_LENGTH);
-                
+
                 // Use the new debug utilities for better logging
                 IKSolver.debugUtils.logIKSolution(i, target, ikSolution, actualFootPos);
             }
@@ -334,27 +404,92 @@ export class Spider {
     }
 
     /**
-     * Update kinematic foot collider positions to match visual feet.
+     * Update kinematic leg segment colliders to match visual leg positions.
      * @private
      */
     _updateFootColliders() {
-        if (!this.footBodies || this.footBodies.length === 0) return;
+        if (!this.thighBodies || !this.tibiaBodies || !this.footBodies) return;
+        if (this.thighBodies.length === 0) return;
 
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
-            const footBody = this.footBodies[i];
             const legGroup = this.legGroups[i];
+            const thighBody = this.thighBodies[i];
+            const tibiaBody = this.tibiaBodies[i];
+            const footBody = this.footBodies[i];
 
-            if (footBody && legGroup) {
-                // Calculate foot world position
-                const footWorldPos = IKSolver.getFootWorldPosition(
-                    legGroup,
-                    Spider.THIGH_LENGTH,
-                    Spider.TIBIA_LENGTH
-                );
+            if (!legGroup || !thighBody || !tibiaBody || !footBody) continue;
 
-                // Update kinematic body position
-                footBody.position.copy(footWorldPos);
+            // Update matrices to get accurate world positions
+            this.gameObject.updateMatrixWorld(true);
+
+            // Get thigh mesh for positioning thigh collider
+            const thighMesh = legGroup.getObjectByName(`thigh_${i}`);
+            if (thighMesh) {
+                const thighWorldPos = new THREE.Vector3();
+                const thighWorldQuat = new THREE.Quaternion();
+                
+                thighMesh.getWorldPosition(thighWorldPos);
+                thighMesh.getWorldQuaternion(thighWorldQuat);
+                
+                thighBody.position.copy(thighWorldPos);
+                thighBody.quaternion.copy(thighWorldQuat);
+
+                // Update constraint attachment point for thigh
+                if (thighBody.constraint) {
+                    const legAttachPoint = legGroup.position.clone();
+                    legAttachPoint.applyMatrix4(this.gameObject.matrixWorld);
+                    
+                    // Calculate relative position from spider body to leg attachment
+                    const relativePos = new CANNON.Vec3(
+                        legAttachPoint.x - this.physicsBody.position.x,
+                        legAttachPoint.y - this.physicsBody.position.y,
+                        legAttachPoint.z - this.physicsBody.position.z
+                    );
+                    
+                    thighBody.constraint.pivotA.copy(relativePos);
+                    thighBody.constraint.pivotB.set(0, -Spider.THIGH_LENGTH/2, 0); // Attach at base of thigh
+                }
             }
+
+            // Get tibia mesh for positioning tibia collider
+            const kneeGroup = legGroup.getObjectByName(`knee_group_${i}`);
+            if (kneeGroup) {
+                const tibiaMesh = kneeGroup.getObjectByName(`tibia_${i}`);
+                if (tibiaMesh) {
+                    const tibiaWorldPos = new THREE.Vector3();
+                    const tibiaWorldQuat = new THREE.Quaternion();
+                    
+                    tibiaMesh.getWorldPosition(tibiaWorldPos);
+                    tibiaMesh.getWorldQuaternion(tibiaWorldQuat);
+                    
+                    tibiaBody.position.copy(tibiaWorldPos);
+                    tibiaBody.quaternion.copy(tibiaWorldQuat);
+
+                    // Update constraint attachment point for tibia
+                    if (tibiaBody.constraint) {
+                        const kneeWorldPos = new THREE.Vector3();
+                        kneeGroup.getWorldPosition(kneeWorldPos);
+                        
+                        // Calculate relative position from spider body to knee
+                        const relativePos = new CANNON.Vec3(
+                            kneeWorldPos.x - this.physicsBody.position.x,
+                            kneeWorldPos.y - this.physicsBody.position.y,
+                            kneeWorldPos.z - this.physicsBody.position.z
+                        );
+                        
+                        tibiaBody.constraint.pivotA.copy(relativePos);
+                        tibiaBody.constraint.pivotB.set(0, -Spider.TIBIA_LENGTH/2, 0); // Attach at base of tibia
+                    }
+                }
+            }
+
+            // Update foot detection sphere (at tip of tibia) - keep kinematic
+            const footWorldPos = IKSolver.getFootWorldPosition(
+                legGroup,
+                Spider.THIGH_LENGTH,
+                Spider.TIBIA_LENGTH
+            );
+            footBody.position.copy(footWorldPos);
         }
     }
 
@@ -365,36 +500,84 @@ export class Spider {
     _applyGroundForces() {
         if (!this.physicsBody || !this.footBodies) return;
 
-        // TEMPORARILY DISABLED - debugging the flying issue
-        return;
-
-        // Check each foot for ground contact and apply reaction forces
+        // New approach: Body stays as rigidbody, legs provide collision support
+        // When legs touch ground, they act like extending the spider's collision shape
+        
+        const groundLevel = 0.0;
+        const footRadius = Spider.TIBIA_RADIUS * 1.5;
+        const contactThreshold = groundLevel + footRadius + 0.1; // Increased threshold for easier detection
+        
+        let supportForce = 0;
+        let hasGroundContact = false;
+        let debugInfo = [];
+        
+        // Check each leg for ground contact and apply upward support forces
         for (let i = 0; i < this.footBodies.length; i++) {
             const footBody = this.footBodies[i];
-
-            // Check if foot is touching or near the ground
-            if (footBody.position.y <= 0.15) { // Slightly above ground to account for foot radius
-                // Calculate force based on finger position and body weight
-                const fingerExtension = 1 - this.fingerCurls[i]; // More force when finger is extended
-                const footPenetration = Math.max(0, 0.15 - footBody.position.y); // How far "into" ground
-
-                // Upward force to counteract gravity and support the body
-                const baseForce = 2.0; // Base support force per foot
-                const pressureForce = fingerExtension * 8.0; // Additional force from finger pressure
-                const penetrationForce = footPenetration * 20.0; // Force to push out of ground
-
-                const totalForceMagnitude = baseForce + pressureForce + penetrationForce;
-                const forceDirection = new CANNON.Vec3(0, totalForceMagnitude, 0);
-
-                // Apply force at the foot position to create realistic torques
-                const footPosition = new CANNON.Vec3().copy(footBody.position);
-                this.physicsBody.applyForce(forceDirection, footPosition);
-
-                // Add some damping to prevent oscillation
-                if (this.physicsBody.velocity.y > 0) {
-                    this.physicsBody.velocity.y *= 0.95;
-                }
+            const fingerExtension = 1 - this.fingerCurls[i]; // How extended this finger is
+            
+            const footY = footBody.position.y;
+            const isNearGround = footY <= contactThreshold;
+            const isExtended = fingerExtension > 0.1; // Lower threshold
+            const shouldSupport = isNearGround && isExtended;
+            
+            debugInfo.push({
+                leg: i,
+                footY: footY.toFixed(3),
+                nearGround: isNearGround,
+                extended: isExtended,
+                extension: fingerExtension.toFixed(2),
+                supporting: shouldSupport
+            });
+            
+            // Only provide support if finger is extended (player is "pressing down")
+            if (shouldSupport) {
+                hasGroundContact = true;
+                
+                // Calculate support force based on how extended the finger is
+                const penetrationDepth = Math.max(0, contactThreshold - footY);
+                const baseSupport = fingerExtension * 8.0; // Increased base support force
+                const penetrationForce = penetrationDepth * 50.0; // Increased penetration force
+                
+                const legForce = baseSupport + penetrationForce;
+                supportForce += legForce;
+                
+                // Apply upward force directly to body at the leg attachment point
+                const legAttachmentPoint = this.legGroups[i].position.clone();
+                legAttachmentPoint.applyMatrix4(this.gameObject.matrixWorld);
+                
+                // Convert to relative position from body center
+                const relativePos = new CANNON.Vec3(
+                    legAttachmentPoint.x - this.physicsBody.position.x,
+                    legAttachmentPoint.y - this.physicsBody.position.y, 
+                    legAttachmentPoint.z - this.physicsBody.position.z
+                );
+                
+                const upwardForce = new CANNON.Vec3(0, legForce, 0);
+                this.physicsBody.applyForce(upwardForce, relativePos);
+                
+                debugInfo[i].force = legForce.toFixed(1);
+                debugInfo[i].penetration = penetrationDepth.toFixed(3);
             }
+        }
+        
+        // Apply overall support to counteract gravity when legs are supporting
+        if (hasGroundContact && supportForce > 0) {
+            // Counter gravity plus extra for lift
+            const gravityCounterForce = new CANNON.Vec3(0, 12.0 + supportForce * 0.8, 0); // Increased forces
+            this.physicsBody.applyForce(gravityCounterForce);
+            
+            // Add some damping to prevent bouncing
+            if (this.physicsBody.velocity.y > 0.2) {
+                this.physicsBody.velocity.y *= 0.7;
+            }
+        }
+        
+        // Debug log for first spider - show all leg states
+        if (Math.random() < 0.1 && this.gameObject.position.x < 0) {
+            console.log(`🕷️ Body Y: ${this.physicsBody.position.y.toFixed(3)}, Vel Y: ${this.physicsBody.velocity.y.toFixed(3)}`);
+            console.log(`Ground contact: ${hasGroundContact}, Total force: ${supportForce.toFixed(1)}`);
+            console.log('Leg states:', debugInfo);
         }
     }
 

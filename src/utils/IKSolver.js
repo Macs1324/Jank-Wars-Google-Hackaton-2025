@@ -101,13 +101,14 @@ export class IKSolver {
         // X-axis = tangential (side-to-side, minimal for now)
         
         // Radial extension (Y-axis): how far out from body center
-        const maxRadialExtension = maxReach * 0.95; // Nearly full extension when finger is extended
+        const maxRadialExtension = maxReach * 0.85; // Slightly less than full extension for stability
         const minRadialExtension = maxReach * 0.3;  // Pull close to body when finger is curled
         const yTarget = THREE.MathUtils.lerp(maxRadialExtension, minRadialExtension, fingerCurl);
         
         // Vertical position (Z-axis): height relative to leg attachment point
-        const groundLevel = -maxReach * 0.5;    // Down toward ground when extended
-        const liftedHeight = maxReach * 0.3;    // Lift up when curled (spider knee behavior)
+        // Extended the downward range so feet can actually reach the ground
+        const groundLevel = -maxReach * 0.8;        // Much lower - nearly full leg extension downward
+        const liftedHeight = maxReach * 0.4;        // Higher lift when curled for dramatic spider movement
         const zTarget = THREE.MathUtils.lerp(groundLevel, liftedHeight, fingerCurl);
         
         // Side-to-side (X-axis): minimal for now, could add knuckle control later
