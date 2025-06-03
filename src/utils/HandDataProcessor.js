@@ -58,7 +58,7 @@ export class HandDataProcessor {
     /**
      * Low-pass filter for smoothing finger curl values.
      */
-    static smoothingFactor = 0.5; // Higher = more smoothing
+    static smoothingFactor = 0.35; // Higher = more smoothing
 
     /**
      * Previous finger curl values for smoothing.

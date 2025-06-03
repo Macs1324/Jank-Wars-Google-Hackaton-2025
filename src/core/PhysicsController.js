@@ -50,34 +50,52 @@ export class PhysicsController {
     }
 
     /**
-     * Creates a static ground plane in the physics world.
+     * Creates a static ground box in the physics world.
      * @private
      */
     _createGroundPlane() {
-        const groundShape = new CANNON.Plane();
+        const groundShape = new CANNON.Box(new CANNON.Vec3(10, 0.05, 10)); // 20x0.1x20 box (half extents)
+        
+        // Create ground material with high friction
+        const groundMaterial = new CANNON.Material("groundMaterial");
+        
         // Define collision groups
         const GROUP1_GROUND = 1;
-        // const GROUP2_LEGS = 2; // Example for future use
 
         const groundBody = new CANNON.Body({
             mass: 0, // Mass 0 makes it static
             shape: groundShape,
-            material: this.createDefaultMaterial(), // Assign a material for contact properties
+            material: groundMaterial,
             collisionFilterGroup: GROUP1_GROUND,
-            collisionFilterMask: -1 // Collide with everything by default (or specify groups like GROUP2_LEGS)
+            collisionFilterMask: -1 // Collide with everything by default
         });
-        // The plane is infinite and defined by its normal vector (0,1,0) by default,
-        // so it's at y=0. We rotate it to face upwards along the Y axis.
-        groundBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0); // Rotate to be horizontal
+        // Position the box at y=0 (center at 0, extends -0.05 to +0.05)
+        groundBody.position.set(0, 0, 0);
         this.world.addBody(groundBody);
-        console.log("PhysicsController: Static ground plane created at y=0 in collision group 1.");
+        console.log("PhysicsController: Static ground box created at y=0 in collision group 1.");
 
-        // Example contact material (if needed, e.g. spider legs vs ground)
-        // const legMaterial = new CANNON.Material("legMaterial");
-        // this.addContactMaterial(this.world.defaultMaterial, legMaterial, {
-        //     friction: 0.5,
-        //     restitution: 0.1
-        // });
+        // Create leg material for spider legs
+        const legMaterial = new CANNON.Material("legMaterial");
+        
+        // Create contact material between ground and legs with high friction
+        this.addContactMaterial(groundMaterial, legMaterial, {
+            friction: 0.8,        // High friction to prevent sliding
+            restitution: 0.1,     // Low bounce
+            contactEquationStiffness: 1e8,      // Stiff contact
+            contactEquationRelaxation: 3,       // Moderate relaxation
+            frictionEquationStiffness: 1e8,     // Stiff friction
+            frictionEquationRelaxation: 3       // Moderate friction relaxation
+        });
+        
+        // Also create contact between legs and default material (for spider bodies)
+        this.addContactMaterial(legMaterial, this.createDefaultMaterial(), {
+            friction: 0.3,
+            restitution: 0.2
+        });
+        
+        // Store materials for use by spider legs
+        this.groundMaterial = groundMaterial;
+        this.legMaterial = legMaterial;
     }
 
     /**
@@ -213,6 +231,14 @@ export class PhysicsController {
      */
     createDefaultMaterial() {
         return new CANNON.Material("defaultMaterial");
+    }
+
+    /**
+     * Gets the leg material for spider leg physics bodies.
+     * @returns {CANNON.Material}
+     */
+    getLegMaterial() {
+        return this.legMaterial || this.createDefaultMaterial();
     }
 
     /**
