@@ -9,6 +9,46 @@ import { GameLoop } from './game/GameLoop.js';
 import cannonDebugger from 'cannon-es-debugger';
 import { HandDataProcessor } from './utils/HandDataProcessor.js';
 
+// Post-processing imports
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
+
+// Custom saturation shader
+const SaturationShader = {
+    uniforms: {
+        'tDiffuse': { value: null },
+        'saturation': { value: 1.3 }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }
+    `,
+    fragmentShader: `
+        uniform sampler2D tDiffuse;
+        uniform float saturation;
+        varying vec2 vUv;
+        
+        void main() {
+            vec4 color = texture2D( tDiffuse, vUv );
+            
+            // Convert to grayscale
+            float gray = dot( color.rgb, vec3( 0.299, 0.587, 0.114 ) );
+            
+            // Mix grayscale with original color based on saturation
+            vec3 saturated = mix( vec3( gray ), color.rgb, saturation );
+            
+            gl_FragColor = vec4( saturated, color.a );
+        }
+    `
+};
+
 /**
  * @fileoverview Main entry point for the Jank Wars game.
  * Initializes the Three.js scene, camera, renderer, and basic game loop.
@@ -39,6 +79,10 @@ class Game {
     player2Spider = null;
     /** @type {GameLoop | null} */
     gameLoop = null;
+    /** @type {EffectComposer | null} */
+    composer = null;
+    /** @type {Sky | null} */
+    sky = null;
 
     /** @type {number} */
     lastFrameTime = 0;
@@ -101,7 +145,7 @@ class Game {
 
         // Scene
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue
+        // Background is now handled by the Sky object
 
         // Camera
         this.camera = new THREE.PerspectiveCamera(
@@ -115,6 +159,9 @@ class Game {
     }
 
     setupScene() {
+        // Create sky background
+        this.createSky();
+        
         // Lighting
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
         this.scene.add(ambientLight);
@@ -159,6 +206,61 @@ class Game {
             this.player2Spider.initializeLegPhysics(this.physicsController);
         }
         this.debugDisplay.append('Spider leg physics initialization attempted.');
+        
+        // Initialize post-processing after scene setup
+        this.initPostProcessing();
+    }
+    
+    createSky() {
+        // Create sky
+        this.sky = new Sky();
+        this.sky.scale.setScalar(450000);
+        this.scene.add(this.sky);
+
+        // Sky uniforms - adjusted for brighter, more blue sky
+        const skyUniforms = this.sky.material.uniforms;
+        skyUniforms['turbidity'].value = 2;      // Reduced from 10 for clearer, bluer sky
+        skyUniforms['rayleigh'].value = 4;       // Increased from 2 for more blue scattering
+        skyUniforms['mieCoefficient'].value = 0.002; // Reduced for less haze
+        skyUniforms['mieDirectionalG'].value = 0.7;  // Slightly reduced
+
+        // Sun position - higher elevation for brighter sky
+        const sun = new THREE.Vector3();
+        const phi = THREE.MathUtils.degToRad(82); // Higher elevation (was 88)
+        const theta = THREE.MathUtils.degToRad(45); // Azimuth angle
+
+        sun.setFromSphericalCoords(1, phi, theta);
+        skyUniforms['sunPosition'].value.copy(sun);
+
+        this.debugDisplay.append('Sky background created.');
+    }
+    
+    initPostProcessing() {
+        // Create effect composer
+        this.composer = new EffectComposer(this.renderer);
+
+        // Render pass - renders the scene
+        const renderPass = new RenderPass(this.scene, this.camera);
+        this.composer.addPass(renderPass);
+
+        // Saturation pass - makes colors more vibrant
+        const saturationPass = new ShaderPass(SaturationShader);
+        this.composer.addPass(saturationPass);
+
+        // Bloom pass - much more subtle now (80% reduction)
+        const bloomPass = new UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            0.08, // strength reduced from 0.4 to 0.08 (80% reduction)
+            0.8,  // radius  
+            0.15  // threshold increased slightly to affect fewer areas
+        );
+        this.composer.addPass(bloomPass);
+
+        // Output pass - ensures proper color space
+        const outputPass = new OutputPass();
+        this.composer.addPass(outputPass);
+
+        this.debugDisplay.append('Post-processing effects initialized.');
     }
 
     async initWebcamAndHandTracking() {
@@ -248,13 +350,23 @@ class Game {
             this.gameLoop.update(deltaTime, processedHandData);
         }
 
-        this.renderer.render(this.scene, this.camera);
+        // Render with post-processing
+        if (this.composer) {
+            this.composer.render();
+        } else {
+            this.renderer.render(this.scene, this.camera);
+        }
     }
 
     onWindowResize() {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+        
+        // Also resize the composer
+        if (this.composer) {
+            this.composer.setSize(window.innerWidth, window.innerHeight);
+        }
     }
 
     cleanup() {
