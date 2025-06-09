@@ -49,10 +49,10 @@ export class Spider {
     static LEG_COUNT = 5;
     static BODY_RADIUS = 0.20;
 
-    static THIGH_RADIUS = 0.035;
+    static THIGH_RADIUS = 0.055;
     static THIGH_LENGTH = 0.35;
 
-    static TIBIA_RADIUS = 0.03;
+    static TIBIA_RADIUS = 0.045;
     static TIBIA_LENGTH = 0.55;
 
     // Target Y position for the center of the spider's body
@@ -146,7 +146,7 @@ export class Spider {
         // For left spider (x < 0), use clockwise arrangement
         // For right spider (x >= 0), use counter-clockwise arrangement
         const isLeftSpider = this.gameObject.position.x < 0;
-        const legAttachmentAngles = isLeftSpider ? 
+        const legAttachmentAngles = isLeftSpider ?
             baseLegAttachmentAngles : // Left spider gets clockwise (normal)
             baseLegAttachmentAngles.map((angle, i) => i === 0 ? angle : -angle + 2 * Math.PI); // Right spider gets counter-clockwise
 
@@ -329,7 +329,7 @@ export class Spider {
         if (handData && handData.fingerCurls && handData.fingerCurls.length >= Spider.LEG_COUNT) {
             // Now that legs are arranged differently for left vs right spiders,
             // we can use direct finger mapping for both
-            
+
             // Extract finger curl values from hand data
             for (let i = 0; i < Spider.LEG_COUNT; i++) {
                 this.fingerCurls[i] = handData.fingerCurls[i];
@@ -539,40 +539,40 @@ export class Spider {
         const footRadius = Spider.TIBIA_RADIUS * 2.0; // Match the new foot sphere size
         const contactThreshold = groundLevel + footRadius + 0.02; // Much tighter threshold for precision
         const cooldownTime = 0.3; // 300ms cooldown between impulses per leg
-        
+
         let debugInfo = [];
         let legsOnGround = 0;
         let newContacts = 0;
-        
+
         // Update cooldown timers (assuming ~60fps, so deltaTime ≈ 0.016)
-        const deltaTime = 1/60;
+        const deltaTime = 1 / 60;
         for (let i = 0; i < Spider.LEG_COUNT; i++) {
             if (this.legImpulseCooldowns[i] > 0) {
                 this.legImpulseCooldowns[i] -= deltaTime;
             }
         }
-        
+
         // First pass: count how many legs are currently on ground
         for (let i = 0; i < this.footBodies.length; i++) {
             const footBody = this.footBodies[i];
             const fingerExtension = 1 - this.fingerCurls[i];
-            
+
             const footY = footBody.position.y;
             const isNearGround = footY <= contactThreshold;
             const isExtended = fingerExtension > 0.2; // Slightly higher threshold for stability
             const isGroundContact = isNearGround && isExtended;
-            
+
             if (isGroundContact) {
                 legsOnGround++;
             }
-            
+
             // Check for new contacts (only if cooldown has expired)
             const wasContactLastFrame = this.wasGroundContact[i];
             const isNewContact = isGroundContact && !wasContactLastFrame && this.legImpulseCooldowns[i] <= 0;
             if (isNewContact) {
                 newContacts++;
             }
-            
+
             debugInfo.push({
                 leg: i,
                 footY: footY.toFixed(3),
@@ -582,85 +582,85 @@ export class Spider {
                 cooldown: this.legImpulseCooldowns[i].toFixed(2)
             });
         }
-        
+
         // Determine if spider is in a stable pose
         const isStablePose = legsOnGround >= 2; // 2+ legs = stable
         const bodyVelocity = this.physicsBody.velocity.length();
         const isMovingSlowly = bodyVelocity < 0.5; // Much lower threshold
         const shouldApplyStabilityDamping = isStablePose && isMovingSlowly;
-        
+
         // Apply MUCH stronger stability damping if in stable pose
         if (shouldApplyStabilityDamping) {
             // Apply very aggressive damping to stop unwanted movement
             this.physicsBody.velocity.scale(0.1); // Reduce velocity by 90%
             this.physicsBody.angularVelocity.scale(0.1); // Reduce rotation by 90%
-            
+
             // If velocity is very low, clamp it to near-zero
             if (bodyVelocity < 0.1) {
                 this.physicsBody.velocity.set(0, this.physicsBody.velocity.y * 0.5, 0); // Stop horizontal movement, slow vertical
             }
         }
-        
+
         // Second pass: apply impulses only for meaningful new contacts
         for (let i = 0; i < this.footBodies.length; i++) {
             const footBody = this.footBodies[i];
             const fingerExtension = 1 - this.fingerCurls[i];
-            
+
             const footY = footBody.position.y;
             const isNearGround = footY <= contactThreshold;
             const isExtended = fingerExtension > 0.2;
             const isGroundContact = isNearGround && isExtended;
-            
+
             const wasContactLastFrame = this.wasGroundContact[i];
             const isNewContact = isGroundContact && !wasContactLastFrame && this.legImpulseCooldowns[i] <= 0;
-            
+
             // Only apply impulses for new contacts with cooldown protection
             // AND disable impulses completely if spider is stable and moving slowly
             if (isNewContact && !(shouldApplyStabilityDamping && bodyVelocity < 0.3)) {
                 let impulseStrength = fingerExtension * 2.0; // Much lower base strength
-                
+
                 // Further reduce impulse strength if spider is already stable
                 if (isStablePose) {
                     impulseStrength *= 0.1; // Very gentle impulses when stable
                 }
-                
+
                 // Calculate direction from spider body to leg attachment point
                 const legAttachmentPoint = this.legGroups[i].position.clone();
                 legAttachmentPoint.applyMatrix4(this.gameObject.matrixWorld);
-                
+
                 // Direction from body to leg
                 const legDirection = new CANNON.Vec3(
                     legAttachmentPoint.x - this.physicsBody.position.x,
                     0, // Keep Y at 0 for horizontal movement
                     legAttachmentPoint.z - this.physicsBody.position.z
                 );
-                
+
                 // Normalize the direction and apply impulse in OPPOSITE direction
                 const legDirectionLength = Math.sqrt(legDirection.x * legDirection.x + legDirection.z * legDirection.z);
                 if (legDirectionLength > 0) {
                     legDirection.x /= legDirectionLength;
                     legDirection.z /= legDirectionLength;
-                    
+
                     // Apply impulse in opposite direction (push away from the leg)
                     const oppositeImpulse = new CANNON.Vec3(
                         -legDirection.x * impulseStrength,
                         impulseStrength * 0.2, // Smaller upward component
                         -legDirection.z * impulseStrength
                     );
-                    
+
                     this.physicsBody.applyImpulse(oppositeImpulse);
-                    
+
                     // Set cooldown for this leg
                     this.legImpulseCooldowns[i] = cooldownTime;
                 }
-                
+
                 debugInfo[i].impulse = impulseStrength.toFixed(1);
             }
-            
+
             // Update ground contact state for next frame
             this.wasGroundContact[i] = isGroundContact;
         }
-        
+
         // Debug log for first spider occasionally
         if (Math.random() < 0.02 && this.gameObject.position.x < 0) { // Reduced logging frequency
             if (newContacts > 0 || shouldApplyStabilityDamping) {
@@ -694,22 +694,22 @@ export class Spider {
             // Get the thigh and tibia meshes
             const thighMesh = legGroup.getObjectByName(`thigh_${i}`);
             const kneeGroup = legGroup.getObjectByName(`knee_group_${i}`);
-            
+
             if (!thighMesh || !kneeGroup) continue;
-            
+
             const tibiaMesh = kneeGroup.getObjectByName(`tibia_${i}`);
             if (!tibiaMesh) continue;
 
             // Simplified approach: directly copy physics body transforms
             // This bypasses complex matrix transformations that might be causing issues
-            
+
             // For thigh: get physics body world position and convert to mesh local position
             const thighWorldPos = new THREE.Vector3().copy(thighBody.position);
             const thighWorldQuat = new THREE.Quaternion().copy(thighBody.quaternion);
-            
+
             // Convert world position to gameObject local space
             thighWorldPos.sub(this.gameObject.position);
-            
+
             // Simple approach: set thigh mesh position directly (may not be perfect but should work)
             thighMesh.position.copy(thighWorldPos);
             thighMesh.quaternion.copy(thighWorldQuat);
@@ -717,10 +717,10 @@ export class Spider {
             // For tibia: similar approach
             const tibiaWorldPos = new THREE.Vector3().copy(tibiaBody.position);
             const tibiaWorldQuat = new THREE.Quaternion().copy(tibiaBody.quaternion);
-            
+
             // Convert world position to gameObject local space
             tibiaWorldPos.sub(this.gameObject.position);
-            
+
             // Set tibia mesh position (this will likely look wrong but we'll see if it moves)
             tibiaMesh.position.copy(tibiaWorldPos);
             tibiaMesh.quaternion.copy(tibiaWorldQuat);
