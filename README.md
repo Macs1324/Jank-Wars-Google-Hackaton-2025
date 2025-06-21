@@ -72,10 +72,6 @@ The result: genuine skill development, emergent comedy, and unforgettable gaming
 
 **Priority areas**: Combat mechanics, gesture recognition, visual polish, audio integration
 
-## 📄 License
-
-MIT License - Free for any use including commercial
-
 ---
 
 **🕷️ Ready to puppeteer spiders with your fingers? `npm run dev` and let the finger ballet begin!**
